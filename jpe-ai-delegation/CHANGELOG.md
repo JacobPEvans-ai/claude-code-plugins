@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.8](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.28.7...jpe-ai-delegation-v1.28.8) (2026-11-21)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** give routed children 100 turns and 25 minutes, and keep review tasks read-only ([#874](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/874)) ([03cd7da](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/03cd7daf5bdbd77fbbccc96e5c04050132efd154))
+
 ## [1.28.7](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.28.6...jpe-ai-delegation-v1.28.7) (2026-11-20)
 
 
