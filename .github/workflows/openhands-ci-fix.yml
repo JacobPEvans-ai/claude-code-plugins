@@ -1,6 +1,11 @@
 name: OpenHands CI Fix
 
+# Started when CI Gate fails, and by the PR Reconcile sweep: one
+# workflow_dispatch per head commit of a pull request whose code checks failed.
 on:
+  workflow_run:
+    workflows: ["CI Gate"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       failure_run_id:
@@ -23,6 +28,7 @@ permissions:
 
 jobs:
   fix:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
     uses: JacobPEvans/.github-ai/.github/workflows/cc-ci-fix.yml@5737c65c9a6ba4bf9df44dc2bdefb96029fa8b08 # v2.11.3
     with:
       # Hosted runners cannot reach the model router; the review pool can.
@@ -31,9 +37,10 @@ jobs:
       local_model: medium
       daily_run_limit: "20"
       ci_structure: "CI Gate (Markdown lint and file size checks, aggregated in Merge Gate); Validate Claude Code Plugin (manifest validation and plugin tests)"
-      failure_conclusion: failure
+      # Empty on workflow_run: the called workflow reads the failed run from the event.
+      failure_conclusion: ${{ github.event_name == 'workflow_dispatch' && 'failure' || '' }}
       failure_run_id: ${{ inputs.failure_run_id }}
       failure_head_branch: ${{ inputs.failure_head_branch }}
-      failure_head_repository: ${{ github.repository }}
-      failure_actor: ${{ github.actor }}
+      failure_head_repository: ${{ github.event_name == 'workflow_dispatch' && github.repository || '' }}
+      failure_actor: ${{ github.event_name == 'workflow_dispatch' && github.actor || '' }}
     secrets: inherit
