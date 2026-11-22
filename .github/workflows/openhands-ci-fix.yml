@@ -29,7 +29,7 @@ permissions:
 jobs:
   fix:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
-    uses: JacobPEvans/.github-ai/.github/workflows/cc-ci-fix.yml@5035c78b7fada7125c88745828b2dfd25fb896af # v2.61.0
+    uses: JacobPEvans/.github-ai/.github/workflows/cc-ci-fix.yml@8de7ca5f0d45912fa6d01cc6e995c275c3bb2ba7 # v2.67.0
     with:
       # Hosted runners cannot reach the model router; the review pool can.
       runner_label: review
