@@ -2548,6 +2548,18 @@ describe('route telemetry failures', () => {
     expect(w.nextCalls).toHaveLength(0)
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'stopped', reason: 'payload contains prohibited content' })
   })
+  test('a guard that keeps throwing stops the spawn instead of running the terminal rung', async () => {
+    const call = {
+      tool: 'Agent',
+      prompt: 'Summarize this request.',
+      get model(): undefined {
+        throw new Error('model read failed')
+      },
+    }
+    const w = world()
+    expect(text(await w.invoke('tool.call', call))).toContain('routing failed closed')
+    expect(w.nextCalls).toHaveLength(0)
+  })
   test('a rejected clock never turns a stop into a rejection, and the route line is still written', async () => {
     const w = world({ clockThrows: true })
     expect(text(await w.agent({ model: 'sonnet' }))).toContain('subagents are forbidden')

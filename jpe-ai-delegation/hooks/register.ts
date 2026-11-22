@@ -1160,10 +1160,15 @@ ${PROMPT_POLICY}`, scope: 'session' }] }
   // An unexpected router failure must not bypass the model and payload guards.
   on('tool.call', { tool: 'Agent' }, ($, e, next) => route($, e as never, next as never) as never).catch(async ($, e, next) => {
     const original = e as AgentCall
-    const event = newEvent(original)
-    const guards = await routeGuards($, original, event)
-    if (!guards.allowed) return guards.result
-    await logRoute($, event, LAST_RESORT.model, 'terminal rung after error')
+    // A guard that cannot be evaluated stops the spawn: the terminal rung runs only after the guards pass.
+    try {
+      const event = newEvent(original)
+      const guards = await routeGuards($, original, event)
+      if (!guards.allowed) return guards.result
+      await logRoute($, event, LAST_RESORT.model, 'terminal rung after error')
+    } catch {
+      return failure(original, 'routing failed closed')
+    }
     return routeCore(next as never, { ...original, effort: LAST_RESORT.effort })
   })
 
