@@ -1041,11 +1041,12 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
     return startBackground($, original)
   }
 
-  // One three-way kind per spawn. An explicit tag wins without a request; an untagged eligible spawn asks the
+  // One three-way kind per spawn. A recognized explicit tag wins without a request; an untagged eligible spawn asks the
   // on-host small alias once, after the forbidden-model, custom-agent and payload checks above.
   const genericRung = !definition && !e.isolation && isGenericType(e) && !['Explore', 'Plan'].includes(e.subagent_type ?? '')
   if (codingTask(e.description, e.prompt)) event.kind = { value: 'code', source: 'tag' }
   else if (localTask(e.description, e.prompt)) event.kind = { value: 'text', source: 'tag' }
+  else if (explicitLabel(e.description, e.prompt)) event.kind = { value: 'other', source: 'tag' }
   else if (!genericRung || mandatoryLabel(`${e.description ?? ''}\n${e.prompt}`)) event.kind = { value: 'other', source: 'none' }
   else event.kind = { value: await classifyKind($, e), source: 'classifier' }
 
