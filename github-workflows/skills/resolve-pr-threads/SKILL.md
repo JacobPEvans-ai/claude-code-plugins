@@ -11,8 +11,6 @@ metadata:
   argument-hint: "[PR_NUMBER|all]"
 ---
 
-<!-- markdownlint-disable MD013 -->
-
 # Resolve PR Feedback (Orchestrator)
 
 Processes all PR feedback by grouping related items, fixing each issue or
@@ -34,11 +32,14 @@ mutation.
 ## Rules
 
 - See /gh-cli-patterns for canonical query shapes, mutation names, and placeholder convention
-- Follow [the PR feedback ledger](../gh-cli-patterns/references/pr-feedback-ledger.md) for item IDs, exclusions, bot parsing, coverage reviews, and marker verification
+- Follow [the PR feedback ledger](../gh-cli-patterns/references/pr-feedback-ledger.md) for item IDs, exclusions,
+  bot parsing, coverage reviews, and marker verification
 - **Run gh/git/jq commands directly** via Bash — no scripts, no temp files
 - **Diagnose and fix errors** when a reply fails — the reply must land in the thread
-- **When a reply fails**: re-fetch the source item and its IDs; for inline replies, also re-fetch the thread, verify `databaseId` is numeric, check `gh auth status`, then retry
-- Do not reply to review threads by posting top-level PR comments as a fallback; top-level comments are fine for general PR feedback but cannot be used to resolve specific review threads
+- **When a reply fails**: re-fetch the source item and its IDs; for inline replies, also re-fetch the thread,
+  verify `databaseId` is numeric, check `gh auth status`, then retry
+- Do not reply to review threads by posting top-level PR comments as a fallback; top-level comments are fine for
+  general PR feedback but cannot be used to resolve specific review threads
 
 **Context inference**: Infer owner/repo/PR from current git context, then substitute
 these values for `<OWNER>`, `<REPO>`, `<PR_NUMBER>` placeholders per `gh-cli-patterns`:
@@ -225,4 +226,5 @@ Omit "Threads:" when zero threads; omit "Feedback:" when no feedback items exist
 - finalize-pr (github-workflows) — orchestrator that invokes resolve-pr-threads as part of PR finalization
 - trigger-ai-reviews (github-workflows) — triggers AI reviewers whose feedback is resolved by this skill
 - pr-standards (github-workflows) — PR authoring and review standards
-- gh-cli-patterns (github-workflows) — canonical gh CLI command shapes, fetch/resolve/reply patterns, placeholder convention, and [PR feedback ledger](../gh-cli-patterns/references/pr-feedback-ledger.md)
+- gh-cli-patterns (github-workflows) — canonical gh CLI command shapes, fetch/resolve/reply patterns, placeholder
+  convention, and [PR feedback ledger](../gh-cli-patterns/references/pr-feedback-ledger.md)

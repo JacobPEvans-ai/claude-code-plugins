@@ -5,30 +5,18 @@ description: Apply the executor ladder for the maintainer's own setup, including
 
 # Delegation ladder
 
-Route each delegated task to the first rung that qualifies. Check codex-quota first.
-Rung 2 holds two equal first choices, split by sensitivity; when both qualify,
-use the usage-pace order in the executor section below and spend every
-subscription before it resets (ZCode 5-hour and weekly, OpenCode Go monthly,
-Codex weekly).
+The routing statement is AGENTS.md, 'Delegation routing', in the shared instructions repository. This skill does
+not restate it. The hook places every spawn. The sections below say what the hook does, how to tag a task and how
+to check a result.
 
-1. Small, quick, checkable tasks (summarize, extract, classify, reformat, a first pass over a file or log) go to
-   the router local default or medium capability before any subscription; escalate only after a checked failure.
-2. A public sandbox (Qwen first, then ZCode) or Codex:
-   - Qwen (`zcode-job --tool opencode-qwen`), then ZCode (`zcode-job`): obvious, definitely non-sensitive work in public repos. Coding and coding-adjacent only:
-     code, tests, GitHub automation and workflows, code reviews. Open-internet research needs a separate untrusted, internet-open container.
-     The output is a ready PR. Leak-scan it before merge. Never auto-merge it.
-   - Codex: anything even remotely sensitive, or any private repo. Codex runs
-     Luna at `xhigh` (AGENTS.md, 'Delegation routing' in the shared instructions
-     repository). Codex qualifies while `codex-quota` exits 0 (more than 5% left).
-     Complicated bulk and mandatory auth, secrets, router, memory and cluster
-     topics name `[class: bulk-complex]`.
-3. Other subscriptions where they fit, e.g. OpenCode Go (`zcode-job --tool opencode`) and Z.ai GLM. Public work only,
-   preferred while that subscription is at or under its pace for the billing period, tried last when over it.
-4. Haiku `xhigh`, the last resort, only after rungs 1, 2 and 3 are exhausted or do not qualify; even then Haiku runs before the orchestrator works solo.
+- Codex qualifies while `codex-quota` exits 0 (more than 5% left).
+- Complicated bulk and mandatory auth, secrets, router, memory and cluster topics name `[class: bulk-complex]`.
+- A public sandbox takes only obvious, definitely non-sensitive coding in public repos. Its output is a ready PR.
+  Leak-scan it before merge. Never auto-merge it.
+- Antigravity (`agy`) stays a second-opinion reviewer, never an executor.
 
-Never Sonnet, Opus or Fable subagents.
-Never send secrets, credentials, inventory or incident content to any executor.
-Antigravity (`agy`) stays a second-opinion reviewer, never an executor.
+The hook ranks eligible executors by live quota, as described below. The `agent-route` helper does not read quota:
+it reports the first eligible executor from this fixed table.
 
 | Kind | Ladder | Sandbox eligibility | Use |
 | --- | --- | --- | --- |
