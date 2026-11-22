@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.18.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/ai-delegation-v6.17.0...ai-delegation-v6.18.0) (2026-11-22)
+
+
+### Features
+
+* **ai-delegation:** event monitors replace the timed idle sweep ([#884](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/884)) ([b658e79](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/b658e79742fc427a1e4f687bf3696ac49b393234))
+
 ## [6.17.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/ai-delegation-v6.16.0...ai-delegation-v6.17.0) (2026-11-17)
 
 
