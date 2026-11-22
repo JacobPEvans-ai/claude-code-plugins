@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.33.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/ai-cli-harness-better-practices-v4.32.0...ai-cli-harness-better-practices-v4.33.0) (2026-11-22)
+
+
+### Features
+
+* **ai-cli-harness-better-practices:** add the work-management skill ([#903](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/903)) ([64834c5](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/64834c5b7ddc7870120e809ac6fe781ba25102f5))
+
 ## [4.32.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/ai-cli-harness-better-practices-v4.31.0...ai-cli-harness-better-practices-v4.32.0) (2026-11-17)
 
 
