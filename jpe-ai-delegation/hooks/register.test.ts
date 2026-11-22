@@ -2605,6 +2605,7 @@ describe('sandbox job outcomes', () => {
   for (const [name, options] of [
     ['still running', { jobStatus: { [job(1)]: { state: 'running', end: '' } } }],
     ['opened a PR', { jobStatus: { [job(1)]: { state: 'succeeded', end: 'pr_opened' } } }],
+    ['is marked failed although its PR is open', { jobStatus: { [job(1)]: { state: 'failed', end: 'pr_opened', pr: PR.html_url, reason: 'job bundle export failed' } }, sandboxRuns: { 'opencode-qwen': { exit: 1, output: `FAIL|${job(1)}|job bundle export failed\n` } } }],
     ['status exits non-zero', { jobStatus: { [job(1)]: { end: 'no_commit' } }, statusExit: 1 }],
     ['status is not JSON', { jobStatus: { [job(1)]: '{' } }],
     ['status hangs past 15 seconds', { statusHangs: true }],
