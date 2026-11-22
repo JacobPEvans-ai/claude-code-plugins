@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.73.5](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.73.4...v6.73.5) (2026-11-22)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** fall through to the terminal rung on router errors ([#881](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/881)) ([a06610f](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/a06610f8a46e5f91da0b54f89eac4b96047b56c8))
+
 ## [6.73.4](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.73.3...v6.73.4) (2026-11-21)
 
 

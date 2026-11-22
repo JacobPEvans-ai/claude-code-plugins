@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.9](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.28.8...jpe-ai-delegation-v1.28.9) (2026-11-22)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** fall through to the terminal rung on router errors ([#881](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/881)) ([a06610f](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/a06610f8a46e5f91da0b54f89eac4b96047b56c8))
+
 ## [1.28.8](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.28.7...jpe-ai-delegation-v1.28.8) (2026-11-21)
 
 
