@@ -27,22 +27,18 @@ Every wait is a background monitor with a wake condition; a worker never
 sits blocked. The monitor wakes the session when the job ends; a wake
 whose only content is "still waiting" is a keep-warm ping (§6).
 
-## 3. Idle sweep
+## 3. Session monitors
 
-The lead schedules a sweep on an interval shorter than the workers'
-prompt-cache lifetime. The sweep runs on the cheapest session that can do
-it, never on the lead, so the lead's context stays for judgment. The sweep checks each worker's state and tells an
-idle worker to pull its next queue item. A worker whose queue is empty or
-fully blocked is reported to the lead; the lead assigns work or closes the
-session. The sweep, the productivity check and the periodic report stop
-when the run ends or every worker is closed; each runs on a fixed interval,
-never a tight loop.
+The lead holds one background monitor on each worker's state, and one worker
+holds a monitor on the lead. No model runs a timed sweep. A session idle or
+blocked for 15 minutes gets one nudge. With no reply in 5 minutes it is
+restarted from its brief and report file. A worker whose queue is empty or
+fully blocked tells the lead, which assigns work or closes the session.
 
-## 4. Productivity check
+## 4. Milestone reports
 
-On a fixed cadence, each worker reports one line: current item, what it
-waits on, how many jobs it runs in parallel and of what kind, and its next
-item. A worker with a non-empty queue and no parallel jobs says why.
+A worker reports at each milestone, in one line: what finished, with its
+proof, and its next item.
 
 ## 5. Fan-out
 
