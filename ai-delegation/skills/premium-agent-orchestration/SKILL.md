@@ -20,7 +20,7 @@ Pause the current task and run this reset as soon as the skill loads.
    against its named yes/no check, and reconcile before resuming.
 4. Re-plan from live state and fan out every ready, independent task in
    parallel, each at its cheapest capable rung (below).
-5. Schedule the idle sweep and the productivity check for the fleet.
+5. Arm one background monitor for each running job and each worker session.
 6. Answer the user briefly with the current state, next step, or blocker.
 
 ## What the parent keeps
@@ -72,6 +72,12 @@ carries the tool's instructions, so no other context does.
 Every worker and subagent is working, waiting on a named event with a
 background wake condition while its next item runs, or closed. While a job
 runs, start the next piece of work in the same turn and arm a background wait that wakes the session when the job ends.
-Never wake only to say "still waiting". Sweep for idle sessions on an interval shorter than the
-prompt-cache lifetime, on the cheapest session that can do it, never the lead.
+Never wake only to say "still waiting". Watch sessions with an event monitor, never a timed sweep.
 The procedure is in `references/fleet-utilization.md`.
+
+## No silent job
+
+- Every dispatch sets the tool's own timeout.
+- One monitor per background job. It fires on exit, or after 15 minutes with no new output.
+- When it fires, read the last output once, stop the job and log the case. Then re-dispatch one rung up or split
+  the task. After two re-dispatches, park the task as a tracked item.
