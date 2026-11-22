@@ -148,7 +148,7 @@ def main() -> None:
         deny(
             f"BLOCKED: File '{file_path}' is on the main branch. "
             "Editing files on the main branch is not allowed.\n\n"
-            "Create or switch to a worktree before editing.",
+            "Create the branch with `git town hack <name>`, or `git worktree add <path> -b <branch> origin/<default-branch>`.",
         )
 
     sys.exit(0)

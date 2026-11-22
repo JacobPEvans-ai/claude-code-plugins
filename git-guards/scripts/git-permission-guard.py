@@ -48,6 +48,29 @@ DENY_GIT_ONLY = [
      "defines an alias that bulk-pushes local refs"),
 ]
 
+# A reason with no entry keeps the generic line, so a new rule can never crash the guard open.
+FIX_FALLBACK = "Fix the underlying issue instead."
+
+DENY_ALWAYS_GUIDANCE = {
+    "removes pre-commit hooks": "Keep hooks active with `pre-commit install`.",
+    "deletes git hooks": "Keep `.git/hooks` intact and restore managed hooks with `pre-commit install`.",
+    "disables git hooks": "Keep the hook executable; restore managed hooks with `pre-commit install`.",
+}
+
+DENY_GIT_GUIDANCE = {
+    "bypasses pre-commit hooks": "Fix the hook, then retry `git commit` with hooks enabled.",
+    "disables commit/tag signing (required_signatures rejects unsigned)": "Sign with `git commit -S` or `git tag -s`.",
+    "bypasses merge hooks": "Fix the hook, then retry `git merge` with hooks enabled.",
+    "bypasses commit hooks": "Fix the hook, then retry `git cherry-pick` or `git rebase` without `--no-verify`.",
+    "changes hook directory": "Restore the repository hook path with `git config --unset core.hooksPath`.",
+    "disables commit/tag signing": "Enable signing with `git config commit.gpgsign true` or `git config tag.gpgsign true`.",
+    "unsetting reverts signing to default-off": "Enable signing with `git config commit.gpgsign true` or `git config tag.gpgsign true`.",
+    "force-pushes overwrite remote history": "Use a regular `git push` for fast-forward updates, or `git revert <commit>` to undo published changes.",
+    "pushes all local refs at once, publishing local-only refs that were never meant for the remote": "Push only the intended branch with `git push origin <branch>`.",
+    "uses a wildcard refspec, publishing every matching local ref": "Push only the intended branch with `git push origin <branch>`.",
+    "defines an alias that bulk-pushes local refs": "Define the alias to push only the intended branch, such as `git push origin <branch>`.",
+}
+
 # Commands that are allowed, but carry a caution note back to the agent.
 #
 # These used to emit permissionDecision "ask". They no longer do: an ask
@@ -504,7 +527,7 @@ def main():
     for segment in segments:
         reason = _deny_always_reason(segment)
         if reason:
-            deny(f"This command {reason}. Fix the underlying issue instead.")
+            deny(f"This command {reason}. {DENY_ALWAYS_GUIDANCE.get(reason, FIX_FALLBACK)}")
 
     # Every git/gh rule below is evaluated per command segment, so a git command
     # chained after another (`cd /repo && git push --all`) is still inspected.
@@ -566,16 +589,16 @@ def _check_segment(command: str, raw_command: str, hook_cwd: str) -> None:
     if is_git:
         for pattern, reason in DENY_GIT_ONLY:
             if re.search(pattern, subcommand, re.IGNORECASE):
-                deny(f"This command {reason}. Fix the underlying issue instead.")
+                deny(f"This command {reason}. {DENY_GIT_GUIDANCE.get(reason, FIX_FALLBACK)}")
         # Check git -c config options for hook/signing bypass attempts.
         # Anchor to the key portion to avoid false positives where the value
         # contains the key name as a substring.
         for opt in git_config_opts:
             if re.match(r"core\.hooksPath\s*(?:=|$)", opt, re.IGNORECASE):
-                deny("This command bypasses configured hooks. Fix the underlying issue instead.")
+                deny("This command bypasses configured hooks. Restore the repository hook path with `git config --unset core.hooksPath`.")
             # Only deny explicit false values; allow `=true` and missing-value (which means true).
             if re.match(r"^(?:commit|tag)\.gpgsign\s*=\s*(?:false|0|off|no)\b", opt, re.IGNORECASE):
-                deny("This command disables commit/tag signing. Fix the underlying issue instead.")
+                deny("This command disables commit/tag signing. Enable signing with `git config commit.gpgsign true` or `git config tag.gpgsign true`.")
         # Fallback: detect -c core.hooksPath remaining in the subcommand when the
         # extraction loop broke early on an unrecognised git global option.
         # Successfully parsed -c opts are stripped from subcommand, so this
@@ -594,14 +617,14 @@ def _check_segment(command: str, raw_command: str, hook_cwd: str) -> None:
             if tok == "-c" and i + 1 < len(subcmd_tokens):
                 config_token = subcmd_tokens[i + 1]
                 if re.match(r"^core\.hooksPath(=|$)", config_token, re.IGNORECASE):
-                    deny("This command bypasses configured hooks. Fix the underlying issue instead.")
+                    deny("This command bypasses configured hooks. Restore the repository hook path with `git config --unset core.hooksPath`.")
                 if re.match(r"^(?:commit|tag)\.gpgsign\s*=\s*(?:false|0|off|no)\b", config_token, re.IGNORECASE):
-                    deny("This command disables commit/tag signing. Fix the underlying issue instead.")
+                    deny("This command disables commit/tag signing. Enable signing with `git config commit.gpgsign true` or `git config tag.gpgsign true`.")
 
         if sub_tokens and sub_tokens[0] in BLOCKED_ON_MAIN and _is_on_main_branch(_resolve_effective_dir(target_dir, hook_cwd)):
             deny(
                 f"'git {sub_tokens[0]}' is not allowed on the main branch. "
-                "Create a worktree using `/superpowers:using-git-worktrees`."
+                "Create the branch with `git town hack <name>`, or `git worktree add <path> -b <branch> origin/<default-branch>`."
             )
 
     # Check DENY_GH patterns (token prefix match on gh subcommand)
