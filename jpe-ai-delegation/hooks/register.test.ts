@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
-import { endAnchor, isGenericType, jobHistory, jobState, recentFailures } from './lib/policy'
+import { attemptHistory, endAnchor, isGenericType, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
 import { register } from './register'
 import { CODEX, CLASSIFIER, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, LAST_RESORT, ROUTED_CHILD_TIMEOUT_MS, codexArgv, harnessArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
@@ -2256,37 +2256,42 @@ describe('harness executor', () => {
     expect(claude[1].env?.ANTHROPIC_MODEL).toBe('medium')
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex', skipped: { 'homelab-harness': 'failed', 'host-harness': 'failed' } })
   })
-  test('failed harness rows cool down for ten minutes and become eligible again after expiry', async () => {
-    const w = world({ env: gateways, harnessExit: 1 })
-    await w.agent()
-    expect(routeEvents(w).at(-1)).toMatchObject({ skipped: { 'homelab-harness': 'failed', 'host-harness': 'failed' } })
-    const firstCount = w.calls.filter((c) => c.argv[0] === 'claude').length
+  test('three failed harness attempts skip each row on the fourth spawn and routing continues to Codex', async () => {
+    const logTail: unknown[] = []
+    const w = world({ env: gateways, harnessExit: 1, logTail })
+    let copied = 0
+    const rememberOutcomes = () => {
+      const outcomes = routeEvents(w).filter((line) => line.event === 'outcome')
+      logTail.push(...outcomes.slice(copied))
+      copied = outcomes.length
+    }
+    await w.agent(); rememberOutcomes()
+    await w.agent(); rememberOutcomes()
+    await w.agent(); rememberOutcomes()
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex' })
+    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(6)
 
-    w.setNow(1_599_999)
     await w.agent()
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(firstCount)
+    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(6)
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex', skipped: { 'homelab-harness': 'recent_failures', 'host-harness': 'recent_failures' } })
-
-    w.setNow(1_600_001)
-    await w.agent()
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(firstCount + 2)
-    expect(routeEvents(w).at(-1)).toMatchObject({ skipped: { 'homelab-harness': 'failed', 'host-harness': 'failed' } })
   })
-  test('failed Codex rows cool down for ten minutes and become eligible again after expiry', async () => {
-    const w = world({ quotaUrl: null, codexQuota: 'codex-quota: available {"p":40,"s":null}', codexExit: 1 })
-    await w.agent()
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'haiku', skipped: { codex: 'failed' } })
-    expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(1)
+  test('three failed Codex attempts skip Codex on the fourth spawn and routing continues to Haiku', async () => {
+    const logTail: unknown[] = []
+    const w = world({ quotaUrl: null, codexQuota: 'codex-quota: available {"p":40,"s":null}', codexExit: 1, logTail })
+    let copied = 0
+    const rememberOutcomes = () => {
+      const outcomes = routeEvents(w).filter((line) => line.event === 'outcome')
+      logTail.push(...outcomes.slice(copied))
+      copied = outcomes.length
+    }
+    await w.agent(); rememberOutcomes()
+    await w.agent(); rememberOutcomes()
+    await w.agent(); rememberOutcomes()
+    expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(3)
 
-    w.setNow(1_599_999)
     await w.agent()
-    expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(1)
+    expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(3)
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'haiku', skipped: { codex: 'recent_failures' } })
-
-    w.setNow(1_600_001)
-    await w.agent()
-    expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(2)
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'haiku', skipped: { codex: 'failed' } })
   })
   test('without a router base URL the harness rows are skipped as not_installed and no child runs', async () => {
     const w = world({})
@@ -2328,6 +2333,7 @@ describe('harness executor', () => {
     expect(w.writes.some((s) => s.includes('harness failure: harness invocation failed: still running after 1500000 ms'))).toBe(true)
     expect(w.writes.some((s) => s.includes('codex failure: codex exec invocation or output read failed: still running after 1500000 ms'))).toBe(true)
     expect(w.killed.map((argv) => argv[0])).toEqual(['claude', 'codex'])
+    expect(routeEvents(w).filter((line) => line.event === 'outcome').map(({ executor, end }) => [executor, end])).toEqual([['homelab-harness', 'timeout'], ['codex', 'timeout']])
   })
   test('a harness call that throws logs the error text with the failure', async () => {
     const w = world({ env: gateways, harnessStdout: 'not json' })
@@ -2478,6 +2484,49 @@ describe('paid rows and router-chat', () => {
   }
 })
 
+describe('routed attempt outcomes', () => {
+  const HOUR = 3_600_000
+  const MIN = 60_000
+  const NOW = 100 * HOUR + 10 * MIN
+  const ended = (executor: string, end: string, at: number, ts = at) => ({ ts_ms: ts, event: 'outcome', executor, end, ended_ms: at })
+  const lines = (entries: unknown[]) => entries.map((entry) => typeof entry === 'string' ? entry : JSON.stringify(entry))
+
+  test('attempt history ignores malformed and more than one minute future lines', () => {
+    const outcomes = attemptHistory(lines(['not json', ended('codex', 'failed', NOW - MIN), ended('codex', 'failed', NOW, NOW + MIN + 1),
+      ended('Bad ID', 'failed', NOW), ended('codex', 'no_commit', NOW)]), NOW)
+    expect(outcomes).toEqual([{ executor: 'codex', end: 'failed', ts_ms: NOW - MIN, ended_ms: NOW - MIN }])
+  })
+
+  test('three failures in the last hour skip for 30 minutes after the newest one', () => {
+    const outcomes = attemptHistory(lines([ended('host-harness', 'failed', NOW - 30 * MIN), ended('host-harness', 'timeout', NOW - 20 * MIN),
+      ended('host-harness', 'failed', NOW - 10 * MIN)]), NOW)
+    expect(recentAttemptFailures(outcomes, 'host-harness', NOW)).toBe(true)
+    expect(recentAttemptFailures(outcomes, 'host-harness', NOW + 20 * MIN - 1)).toBe(true)
+    expect(recentAttemptFailures(outcomes, 'host-harness', NOW + 20 * MIN)).toBe(false)
+  })
+
+  test('failures older than an hour do not count and a newer success clears the skip', () => {
+    const oldFailures = attemptHistory(lines([ended('codex', 'failed', NOW - 61 * MIN), ended('codex', 'timeout', NOW - 62 * MIN),
+      ended('codex', 'failed', NOW - 5 * MIN)]), NOW)
+    expect(recentAttemptFailures(oldFailures, 'codex', NOW)).toBe(false)
+    const cleared = attemptHistory(lines([ended('codex', 'failed', NOW - 20 * MIN), ended('codex', 'timeout', NOW - 10 * MIN),
+      ended('codex', 'failed', NOW - 5 * MIN), ended('codex', 'ok', NOW - MIN)]), NOW)
+    expect(recentAttemptFailures(cleared, 'codex', NOW)).toBe(false)
+  })
+
+  test('a logged harness outcome contains no prompt or answer text', async () => {
+    const prompt = 'PRIVATE_PROMPT_TEXT'
+    const answer = 'PRIVATE_ANSWER_TEXT'
+    const w = world({ env: gateways, harnessAnswer: answer })
+    expect(text(await w.agent({ description: '[class: standard] PRIVATE_DESCRIPTION_TEXT', prompt }))).toContain(answer)
+    const outcomes = routeEvents(w).filter((line) => line.event === 'outcome')
+    expect(outcomes).toEqual([{ ts_ms: 1_000_000, event: 'outcome', executor: 'homelab-harness', end: 'ok', ended_ms: 1_000_000 }])
+    expect(JSON.stringify(outcomes)).not.toContain(prompt)
+    expect(JSON.stringify(outcomes)).not.toContain(answer)
+    expect(JSON.stringify(outcomes)).not.toContain('PRIVATE_DESCRIPTION_TEXT')
+  })
+})
+
 describe('sandbox job outcomes', () => {
   const HOUR = 3_600_000
   const MIN = 60_000
@@ -2587,10 +2636,10 @@ describe('sandbox job outcomes', () => {
     expect(text(await w.agent(coding))).toContain('[routed: Qwen sandbox')
     expect(outcomeLines(w)).toEqual([])
   })
-  test('a placement with no sandbox candidate reads no job history and no status', async () => {
+  test('a placement with no sandbox candidate reads the log tail for attempt outcomes and no job status', async () => {
     const w = world({ now: NOW, logTail: [placed(1)] })
     await w.agent({ description: '[class: standard]', prompt: 'Implement the change.' })
-    expect(w.calls.some((c) => c.argv[0] === 'tail')).toBe(false)
+    expect(w.calls.some((c) => c.argv[0] === 'tail')).toBe(true)
     expect(statusReads(w)).toEqual([])
   })
   test('a truncated log read counts as no history', async () => {

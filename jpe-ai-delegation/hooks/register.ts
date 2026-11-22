@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LAST_RESORT, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, budgetsFromMetrics, codexArgv, harnessArgv, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
-import type { CodexQuotaRead, Executor, ExecutorRow, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LAST_RESORT, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, harnessArgv, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
+import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
 
@@ -17,7 +17,6 @@ const CODEX_QUOTA_TIMEOUT_MS = 15_000
 const CODEX_QUOTA_TTL_MS = 14_400_000
 const CODEX_QUOTA_FAILURE_TTL_MS = 600_000
 const CODEX_QUOTA_KEY = 'codex-quota'
-const HARNESS_FAILURE_KEY = 'harness-failure:'
 // A harness run that failed at least this long after it started did work and gave up, so the remaining harness rows
 // are skipped and the next row of another transport runs.
 const HARNESS_FALLBACK_MS = 30_000
@@ -30,6 +29,7 @@ const QUOTA_TOKEN_MAX_BYTES = 4096
 const isAbsolutePath = (path: string): boolean => path.startsWith('/')
 // A caught error's own text on one bounded line, so the decision log tells a failed spawn from a bad answer.
 const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').slice(0, 200)
+const isTimeout = (err: unknown): boolean => errText(err) === 'timeout' || /^still running after \d+ ms$/.test(errText(err))
 
 // A session keeps the PATH it started with, so after a host rebuild its first `codex` or `claude` can be a store path
 // the new generation dropped. The current profile's directories go ahead of the inherited PATH for every child CLI;
@@ -205,26 +205,6 @@ async function nativeCodexQuota($: Engine): Promise<NativeQuota> {
   return read
 }
 
-// The key prefix stays stable so harness failures persisted by older hook versions still cool down.
-async function recentExecutorFailure($: Engine, executor: Executor, now: number): Promise<boolean> {
-  if (!Number.isFinite(now)) return false
-  try {
-    const failedAt = await $.store.get(`${HARNESS_FAILURE_KEY}${executor}`)
-    return typeof failedAt === 'number' && Number.isFinite(failedAt) && now >= failedAt && now - failedAt < CODEX_QUOTA_FAILURE_TTL_MS
-  } catch {
-    return false
-  }
-}
-
-async function recordExecutorFailure($: Engine, executor: Executor, at: number | null): Promise<void> {
-  if (at === null) return
-  try {
-    await $.store.set(`${HARNESS_FAILURE_KEY}${executor}`, at)
-  } catch {
-    // A failed store write only costs the next spawn its cooldown.
-  }
-}
-
 // The native read decides codex whenever the feed left it without a score: eligible below the threshold with its used
 // percent recorded, exhausted at or above it or on a refusal, and quota_unknown when no decisive read is possible.
 async function applyNativeCodex($: Engine, view: QuotaView): Promise<void> {
@@ -294,6 +274,7 @@ async function runChild($: Engine, argv: string[], input: string, timeoutMs: num
 async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: string, timeoutMs: number, cwd?: string): Promise<string | undefined> {
   let outputFile: string | undefined
   let failure: string | undefined
+  let end: AttemptEnd = 'failed'
   try {
     const temporary = await $.process.run(['mktemp'], { timeoutMs: 5_000 })
     const temporaryPath = temporary.stdout.trim()
@@ -311,11 +292,12 @@ async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: 
         failure = `codex exec exited with code ${r.exitCode}${childDetail('', r.stderr)}`
       } else {
         const text = ((await $.fs.read(outputFile)) as string).trim()
-        if (text) return text
+        if (text) { end = 'ok'; return text }
         failure = 'codex exec returned an empty final message'
       }
     }
   } catch (err) {
+    if (isTimeout(err)) end = 'timeout'
     failure = `codex exec invocation or output read failed: ${errText(err)}`
   } finally {
     if (outputFile) {
@@ -325,11 +307,11 @@ async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: 
         // A cleanup failure must not replace the Codex result.
       }
     }
+    await logExecutorOutcome($, 'codex', end)
   }
   const reason = failure ?? 'unknown failure'
   $.ui.log(`ai-delegation: Codex failed: ${reason}`)
   await logDecision($, `codex failure: ${reason}`)
-  await recordExecutorFailure($, 'codex', await clockNow($))
   return undefined
 }
 
@@ -337,6 +319,7 @@ async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: 
 // whose `result` is the final text; an empty or errored answer is a failed check, so routing continues.
 async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt: string, timeoutMs: number, cwd?: string): Promise<string | undefined> {
   let failure: string | undefined
+  let end: AttemptEnd = 'failed'
   try {
     const base = (await $.env.get('LITELLM_LOCAL_BASE_URL'))?.replace(/\/+$/, '')
     if (!base) failure = 'router URL unset'
@@ -372,15 +355,24 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
         const parsed = JSON.parse(r.stdout) as { is_error?: unknown; result?: unknown }
         const text = typeof parsed.result === 'string' ? parsed.result.trim() : ''
         if (parsed.is_error !== false || !text) failure = 'harness returned no checked result'
-        else return text
+        else { end = 'ok'; return text }
       }
     }
   } catch (err) {
+    if (isTimeout(err)) end = 'timeout'
     failure = `harness invocation failed: ${errText(err)}`
+  } finally {
+    await logExecutorOutcome($, row.id, end)
   }
   $.ui.log(`ai-delegation: harness failed: ${failure ?? 'unknown failure'}`)
   await logDecision($, `harness failure: ${failure ?? 'unknown failure'}`)
   return undefined
+}
+
+// Attempt outcomes use only the row id, result class and hook clock; prompt and answer text stay out of the log.
+async function logExecutorOutcome($: Engine, executor: Executor, end: AttemptEnd): Promise<void> {
+  const ended_ms = await clockNow($)
+  await logDecision($, JSON.stringify({ ts_ms: ended_ms, event: 'outcome', executor, end, ended_ms }))
 }
 
 // Append-only decision log; `tee -a` keeps parallel hooks from dropping each other's lines. Every step is bounded by
@@ -708,18 +700,21 @@ async function logOutcomes($: Engine, ended: { record: JobRecord; state: JobStat
   return outcomes
 }
 
-// Jobs from recent route lines and one outcome per logged job, read from the last JOB_LOG_BYTES of the decision log; an
-// unreadable or truncated read counts as no history. Pending jobs are read once each, together within
-// JOB_STATUS_BUDGET_MS, and an outcome line is written for each job that has ended.
-async function jobOutcomes($: Engine, nowMs: number): Promise<JobOutcome[]> {
-  let history: { pending: JobRecord[]; outcomes: JobOutcome[] }
+// The one decision-log tail reader shared by job and routed-attempt history; unreadable or truncated output is no history.
+async function decisionLogLines($: Engine): Promise<string[]> {
   try {
     const tail = await $.process.run(['tail', '-c', String(JOB_LOG_BYTES), `${await $.env.get('HOME')}/.claude/ai-delegation.log`], { timeoutMs: 5_000 })
     if (tail.exitCode !== 0 || tail.isStdoutTruncated === true) return []
-    history = jobHistory(tail.stdout.split('\n'), nowMs)
+    return tail.stdout.split('\n')
   } catch {
     return []
   }
+}
+
+// Jobs from recent route lines and one outcome per logged job. Pending jobs are read once each, together within
+// JOB_STATUS_BUDGET_MS, and an outcome line is written for each job that has ended.
+async function jobOutcomes($: Engine, nowMs: number): Promise<JobOutcome[]> {
+  const history = jobHistory(await decisionLogLines($), nowMs)
   if (!history.pending.length) return history.outcomes
   const states: (JobState | undefined)[] = []
   await withTimeout($, Promise.all(history.pending.map(async (p, i) => { states[i] = await jobStatus($, p.job, JOB_STATUS_BUDGET_MS) })), JOB_STATUS_BUDGET_MS).catch(() => undefined)
@@ -1082,14 +1077,9 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
   // Harness rows take text and first-pass work only: code briefs run them out of turns.
   const rows = eligible.rows.filter((r) => r.transport !== 'harness' || event.kind.value !== 'code' || !(skipped[r.id] = 'ineligible'))
   const { scores } = quota
-  const activeRows: ExecutorRow[] = []
-  for (const row of rows) {
-    if (await recentExecutorFailure($, row.id, now)) skipped[row.id] = 'recent_failures'
-    else activeRows.push(row)
-  }
   event.quota_unknown = quota.unknown
   event.quota_source = quota.sources
-  const ranked = rankRows(activeRows, scores, now)
+  const ranked = rankRows(rows, scores, now)
   Object.assign(skipped, ranked.skipped)
   // A codex row the native read could not decide is not a candidate, whatever its feed telemetry says.
   for (const [id, why] of Object.entries(quota.nativeSkips)) skipped[id] = why
@@ -1115,6 +1105,13 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
   const rungLabel = (): Promise<Label> => (labelPromise ??= classify($, e))
   for (const executor of ranked.order.filter((id) => quota.nativeSkips[id] === undefined)) {
     const row = rows.find((r) => r.id === executor)!
+    if ((row.transport === 'harness' && base && !harnessDown) || row.transport === 'codex') {
+      const attemptNow = await clockNow($)
+      if (attemptNow !== null && recentAttemptFailures(attemptHistory(await decisionLogLines($), attemptNow), executor, attemptNow)) {
+        skipped[executor] = 'recent_failures'
+        continue
+      }
+    }
     let result: unknown | undefined
     let cancelled = false
     let unaccepted = false
@@ -1130,7 +1127,6 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
       if (!result) {
         skipped[executor] = 'failed'
         const ended = await clockNow($)
-        await recordExecutorFailure($, executor, ended ?? startedAt)
         if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
       }
     } else if (row.transport === 'codex') {

@@ -333,6 +333,32 @@ export function jobHistory(lines: readonly string[], nowMs: number): { pending: 
   }
   return { pending: placed.filter((p) => !outcomes.has(p.job)).reverse().slice(0, 5), outcomes: [...outcomes.values()] }
 }
+export type AttemptEnd = 'ok' | 'failed' | 'timeout'
+export type AttemptOutcome = { executor: Executor; end: AttemptEnd; ts_ms: number; ended_ms: number }
+const ATTEMPT_ENDS: readonly AttemptEnd[] = ['ok', 'failed', 'timeout']
+// From decision-log lines: one outcome per completed harness or Codex attempt, across repositories. Lines with invalid
+// executor IDs, ends, timestamps, or stamps more than a minute in the future are ignored.
+export function attemptHistory(lines: readonly string[], nowMs: number): AttemptOutcome[] {
+  const outcomes: AttemptOutcome[] = []
+  for (const line of lines) {
+    let entry: { event?: unknown; ts_ms?: unknown; executor?: unknown; end?: unknown; ended_ms?: unknown } | null
+    try { entry = JSON.parse(line) } catch { continue }
+    const ts = entry?.ts_ms
+    if (entry?.event !== 'outcome' || typeof ts !== 'number' || !Number.isFinite(ts) || ts > nowMs + LOG_SKEW_MS ||
+      typeof entry.executor !== 'string' || !JOB_EXECUTOR.test(entry.executor) || !(ATTEMPT_ENDS as readonly unknown[]).includes(entry.end)) continue
+    outcomes.push({ executor: entry.executor as Executor, end: entry.end as AttemptEnd, ts_ms: ts, ended_ms: Math.min(stamp(entry.ended_ms, ts), ts) })
+  }
+  return outcomes
+}
+// Three failed or timed-out attempts in the last hour cool an executor down for 30 minutes after its newest failure,
+// unless a newer successful attempt cleared that failure streak.
+export function recentAttemptFailures(outcomes: readonly AttemptOutcome[], executor: Executor, nowMs: number): boolean {
+  const failures = outcomes.filter((o) => o.executor === executor && (o.end === 'failed' || o.end === 'timeout') && nowMs - o.ended_ms <= 3_600_000)
+  if (failures.length < 3) return false
+  const newest = failures.reduce((a, b) => a.ended_ms >= b.ended_ms ? a : b)
+  if (outcomes.some((o) => o.executor === executor && o.end === 'ok' && o.ended_ms > newest.ended_ms)) return false
+  return nowMs < newest.ended_ms + 1_800_000
+}
 const FAILED_ENDS: readonly JobEnd[] = ['no_commit', 'timeout', 'rate_limited', 'refused']
 // True while two or more of an executor's last three ended jobs for this repository (by end anchor) failed: 60 minutes
 // after the newest failure's end anchor, or until the end of that UTC hour when it is `rate_limited`.
