@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.31.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.30.1...jpe-ai-delegation-v1.31.0) (2026-11-22)
+
+
+### Features
+
+* **jpe-ai-delegation:** skip a harness or Codex rung after three recent failures ([#892](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/892)) ([5cc66e8](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/5cc66e8ac38b0cc4411c9575be2962dce6af1592))
+
 ## [1.30.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.30.0...jpe-ai-delegation-v1.30.1) (2026-11-22)
 
 

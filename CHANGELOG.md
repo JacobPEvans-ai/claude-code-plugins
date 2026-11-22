@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.76.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.75.1...v6.76.0) (2026-11-22)
+
+
+### Features
+
+* **jpe-ai-delegation:** skip a harness or Codex rung after three recent failures ([#892](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/892)) ([5cc66e8](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/5cc66e8ac38b0cc4411c9575be2962dce6af1592))
+
 ## [6.75.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.75.0...v6.75.1) (2026-11-22)
 
 
