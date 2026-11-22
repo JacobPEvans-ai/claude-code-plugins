@@ -65,3 +65,28 @@ EOF
   [[ "$output" == *"Actual exempt paths: scripts/, hooks/, .github/, tests/, test/, plugins/."* ]]
   [[ "$(cat "$log_file")" == *"decision=judge_down_block"* ]]
 }
+
+install_curl_answer() {
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nprintf %%s %s\n' "'{\"choices\":[{\"message\":{\"content\":\"$1\"}}]}'" \
+    > "$BATS_TEST_TMPDIR/bin/curl"
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+}
+
+@test "a judge answer that only starts with allow is unusable and blocks in fail-closed mode" {
+  install_curl_answer "allowance granted"
+
+  run env -u CI GUARD_JUDGE_DOWN=closed CLAUDE_PLUGIN_DATA="$BATS_TEST_TMPDIR/plugin-data" \
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH" bash "$SCRIPT" <<< "$(payload)"
+
+  [ "$status" -eq 2 ]
+}
+
+@test "a judge answer of allow with a reason is an allow" {
+  install_curl_answer "allow: a test fixture"
+
+  run env -u CI GUARD_JUDGE_DOWN=closed CLAUDE_PLUGIN_DATA="$BATS_TEST_TMPDIR/plugin-data" \
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH" bash "$SCRIPT" <<< "$(payload)"
+
+  [ "$status" -eq 0 ]
+}

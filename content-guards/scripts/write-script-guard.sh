@@ -76,8 +76,9 @@ ask_judge() {
     decision=$(printf '%s' "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null) || return 1
     decision_line=$(printf '%s\n' "$decision" | head -1 | sed 's/^[[:space:]]*//')
     case "$decision_line" in
-        [Dd][Ee][Nn][Yy]*) judge_decision=deny ;;
-        [Aa][Ll][Ll][Oo][Ww]*) judge_decision=allow ;;
+        # The whole first word must be the decision: "allowance" is not an answer.
+        [Dd][Ee][Nn][Yy] | [Dd][Ee][Nn][Yy][!A-Za-z]*) judge_decision=deny ;;
+        [Aa][Ll][Ll][Oo][Ww] | [Aa][Ll][Ll][Oo][Ww][!A-Za-z]*) judge_decision=allow ;;
         *) return 1 ;;
     esac
     return 0

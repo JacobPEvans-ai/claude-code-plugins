@@ -47,6 +47,7 @@ CASES = [
     ("echo piped", "Bash", {"command": 'echo "$API_TOKEN" | consumer'}, None),
     ("secret printed, output discarded", "Bash", {"command": 'curl -sf -H @<(printf "X-Auth: %s" "$API_TOKEN") "$URL" >/dev/null'}, None),
     ("secret piped, stderr discarded", "Bash", {"command": 'printf "%s" "$API_TOKEN" 2>/dev/null | consumer'}, None),
+    ("secret printed, output discarded to a quoted null device", "Bash", {"command": """echo "$API_TOKEN" >'/dev/null'"""}, None),
     ("secret to a file after a stderr redirect", "Bash", {"command": 'printf "%s" "$API_TOKEN" 2>/dev/null > out.txt'}, "block"),
     ("secret appended to a file", "Bash", {"command": 'echo "$API_TOKEN" >> out.txt'}, "block"),
     ("plain echo", "Bash", {"command": "echo hello > out.txt"}, None),
