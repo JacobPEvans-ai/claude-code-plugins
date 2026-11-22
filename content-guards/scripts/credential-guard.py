@@ -52,8 +52,9 @@ _PUBLIC_LEAKAGE = re.compile(
 )
 
 _SECRET_WORDS = r"(?:SECRET|TOKEN|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY)"
+# A stderr redirect (`2>`) and a redirect to /dev/null write no secret to a file, so neither counts.
 _SECRET_REDIRECT = re.compile(
-    rf"""(?:echo|printf)[^|;&]*\$[{{(]?[A-Za-z_]*{_SECRET_WORDS}[^|;&]*>{{1,2}}\s*[A-Za-z0-9/._~'"]"""
+    rf"""(?:echo|printf)[^|;&]*\$[{{(]?[A-Za-z_]*{_SECRET_WORDS}[^|;&]*(?<!2)>{{1,2}}\s*(?!/dev/null\b)[A-Za-z0-9/._~'"]"""
     r"""|find-generic-password[^|;&]*>{1,2}\s*[A-Za-z0-9/._~'"]""",
     _FLAGS,
 )
