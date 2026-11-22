@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LAST_RESORT, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, budgetsFromMetrics, codexArgv, harnessArgv, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LAST_RESORT, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, budgetsFromMetrics, codexArgv, harnessArgv, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
 import type { CodexQuotaRead, Executor, ExecutorRow, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
@@ -900,9 +900,32 @@ async function routeGuards($: Engine, e: AgentCall, event: RouteEvent): Promise<
   return { allowed: true, call, definition, customSandbox }
 }
 
-async function routeCore(next: (e: never) => Promise<unknown>, value: AgentCall): Promise<unknown> {
+const TERMINAL_READ_ONLY_NOTE = 'The terminal rung ran read-only; for edits, spawn again with isolation: worktree.'
+
+function terminalCall(e: AgentCall): { call: AgentCall; readOnly: boolean } {
+  const readOnly = e.isolation !== 'worktree' && isGenericType(e)
+  const replaceType = readOnly && !['Explore', 'Plan'].includes(e.subagent_type ?? '')
+  return {
+    call: { ...e, ...(replaceType ? { subagent_type: 'Explore' } : {}), effort: LAST_RESORT.effort },
+    readOnly,
+  }
+}
+
+function appendTerminalNote(result: unknown): unknown {
+  if (!result || typeof result !== 'object') return result
+  const response = result as { result?: { content?: unknown[]; [key: string]: unknown }; [key: string]: unknown }
+  if (!response.result || typeof response.result !== 'object') return result
+  const content = Array.isArray(response.result.content) ? response.result.content : []
+  return {
+    ...response,
+    result: { ...response.result, content: [...content, { type: 'text', text: TERMINAL_READ_ONLY_NOTE }] },
+  }
+}
+
+async function routeCore(next: (e: never) => Promise<unknown>, value: AgentCall, readOnlyTerminal = false): Promise<unknown> {
   try {
-    return await next(value as never)
+    const result = await next(value as never)
+    return readOnlyTerminal ? appendTerminalNote(result) : result
   } catch {
     return failure(value, 'routing failed closed')
   }
@@ -1088,8 +1111,9 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
     event.fell_through_from.push(executor)
   }
   // No executor took the task: the terminal rung runs in core at LAST_RESORT.effort; the agent.spawn hook sets its model.
-  await logRoute($, event, LAST_RESORT.model, 'terminal rung')
-  return routeCore(next, { ...original, effort: LAST_RESORT.effort })
+  const terminal = terminalCall(original)
+  await logRoute($, event, LAST_RESORT.model, terminal.readOnly ? 'terminal rung ran read-only' : 'terminal rung')
+  return routeCore(next, terminal.call, terminal.readOnly)
 }
 
 // One judge ask on the on-host medium alias, the same endpoint classifyKind uses: a parsed verdict, or why there is
@@ -1165,11 +1189,12 @@ ${PROMPT_POLICY}`, scope: 'session' }] }
       const event = newEvent(original)
       const guards = await routeGuards($, original, event)
       if (!guards.allowed) return guards.result
-      await logRoute($, event, LAST_RESORT.model, 'terminal rung after error')
+      const terminal = terminalCall(original)
+      await logRoute($, event, LAST_RESORT.model, terminal.readOnly ? 'terminal rung ran read-only after error' : 'terminal rung after error')
+      return routeCore(next as never, terminal.call, terminal.readOnly)
     } catch {
       return failure(original, 'routing failed closed')
     }
-    return routeCore(next as never, { ...original, effort: LAST_RESORT.effort })
   })
 
   // Every Agent tool spawn that reaches core runs on LAST_RESORT.model. The Agent tool has no model parameter, so the
@@ -1180,6 +1205,12 @@ ${PROMPT_POLICY}`, scope: 'session' }] }
     return next({ ...e, model: LAST_RESORT.model })
   }).catch(() => ({ deny: 'subagent model pin failed closed' }))
 
-  // Permission judge for the bypass-immune ask. A failing hook leaves core's ask.
-  on('tool.check', { tool: 'Bash' }, ($, e, next) => judge($, e, next as never) as never).catch(($, e, next) => next(e))
+  // Subagents cannot open the privileged credential window; every other call keeps the permission judge behavior.
+  on('tool.check', { tool: 'Bash' }, ($, e, next) => {
+    const command = (e.input as { command?: unknown })?.command
+    if (typeof e.agentId === 'string' && e.agentId.length > 0 && typeof command === 'string' && subagentRunsDeniedCommand(command)) {
+      return { decision: 'deny', reason: 'A subagent cannot open the privileged credential window. Return the need to the session that spawned you.' } as never
+    }
+    return judge($, e, next as never) as never
+  }).catch(($, e, next) => next(e))
 }

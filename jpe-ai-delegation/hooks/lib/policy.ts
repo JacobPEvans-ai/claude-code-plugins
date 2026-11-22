@@ -136,6 +136,19 @@ export function parseVerdict(text: string | undefined): Verdict | undefined {
 // True for core's bypass-immune ask about a shell -c script that runs rm.
 export const isShellCAsk = (decision: string, reason: string | undefined): boolean => decision === 'ask' && /\bshell -c\b/i.test(reason ?? '')
 
+// Credential-window commands subagents may never invoke. Command matching is deliberately a whole-word scan of the
+// shell text, so it also sees commands inside wrappers and quoted `-c` scripts without trying to parse shell syntax.
+export const SUBAGENT_DENIED_COMMANDS = ['openbao-unlock'] as const
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+export const subagentRunsDeniedCommand = (command: string): boolean => {
+  const names = SUBAGENT_DENIED_COMMANDS.map(escapeRegExp).join('|')
+  const uses = [...command.matchAll(new RegExp(`(?<![A-Za-z0-9_-])(?:${names})(?![A-Za-z0-9_-])`, 'g'))]
+  const allReadOnly = uses.length > 0 && uses.every((use) =>
+    /^\s+--window-status(?![A-Za-z0-9_-])/.test(command.slice((use.index ?? 0) + use[0].length)),
+  )
+  return uses.length > 0 && !allReadOnly
+}
+
 type Spawn = { subagent_type?: string }
 export const isGenericType = (e: Spawn): boolean => e.subagent_type === undefined || ['general-purpose', 'executor', 'Explore', 'Plan'].includes(e.subagent_type)
 
