@@ -106,10 +106,62 @@ setup() {
   mkdir -p "$project_dir"
   printf '# Hello\n' > "$project_dir/doc.md"
 
-  run env HOME="$fake_home" bash -c \
-    'echo "{\"tool_input\":{\"file_path\":\"'"$project_dir/doc.md"'\"}}" | /bin/bash "$1"' \
-    _ "$SCRIPT"
+  local input
+  input=$(jq -n --arg p "$project_dir/doc.md" '{tool_input:{file_path:$p}}')
+  run env HOME="$fake_home" /bin/bash "$SCRIPT" <<< "$input"
 
   # Correct: walk stopped at $HOME, used inline config, lint passed
   [ "$status" -eq 0 ]
+}
+
+@test "TC10: fallback line-length rule exempts tables, code blocks and link-only lines" {
+  local root fake_home project_dir markdown_file
+  root="$BATS_TEST_TMPDIR"
+  fake_home="$root/home"
+  project_dir="$root/project"
+  markdown_file="$project_dir/long-lines.md"
+  mkdir -p "$fake_home" "$project_dir"
+
+  python3 - "$markdown_file" <<'PY'
+from pathlib import Path
+import sys
+
+row = "| a | " + "x" * 162 + " |"
+code = "code " * 34
+link = "[long link title " + "label " * 20 + "](https://example.com/" + "x" * 120 + ")"
+url = "https://example.com/" + "x" * 150
+Path(sys.argv[1]).write_text(
+    "# Long lines\n\n| a | b |\n|---|---|\n"
+    + row + "\n\n```text\n" + code + "\n```\n\n"
+    + link + "\n\n" + url + "\n"
+)
+PY
+
+  local input
+  input=$(jq -n --arg p "$markdown_file" '{tool_input:{file_path:$p}}')
+  run env HOME="$fake_home" /bin/bash "$SCRIPT" <<< "$input"
+
+  [ "$status" -eq 0 ]
+}
+
+@test "TC11: long prose is blocked with the wrap guidance and configured limit" {
+  local root fake_home project_dir markdown_file
+  root="$BATS_TEST_TMPDIR"
+  fake_home="$root/home"
+  project_dir="$root/project"
+  markdown_file="$project_dir/long-prose.md"
+  mkdir -p "$fake_home" "$project_dir"
+  python3 - "$markdown_file" <<'PY'
+from pathlib import Path
+import sys
+
+Path(sys.argv[1]).write_text("# Long prose\n\n" + ("word " * 33) + "words\n")
+PY
+
+  local input
+  input=$(jq -n --arg p "$markdown_file" '{tool_input:{file_path:$p}}')
+  run env HOME="$fake_home" /bin/bash "$SCRIPT" <<< "$input"
+
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"wrap prose at 160 characters; tables, code blocks and link-only lines are exempt"* ]]
 }

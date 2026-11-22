@@ -106,6 +106,7 @@ config:
     line_length: 160
     heading_line_length: 120
     code_block_line_length: 120
+    code_blocks: false
     tables: false
   MD060: false
 fix: true
@@ -154,6 +155,14 @@ EOF
   } 2>&1 ); then
     errors+=("markdownlint-cli2 failed:")
     errors+=("$markdownlint_output")
+    if [[ "$markdownlint_output" == *"MD013/line-length"* ]]; then
+      line_length=$(printf '%s\n' "$markdownlint_output" \
+        | sed -nE 's/^.*MD013\/line-length.*Expected: ([0-9]+);.*/\1/p' \
+        | head -n 1)
+      if [[ -n "$line_length" ]]; then
+        errors+=("wrap prose at ${line_length} characters; tables, code blocks and link-only lines are exempt")
+      fi
+    fi
   fi
 fi
 
