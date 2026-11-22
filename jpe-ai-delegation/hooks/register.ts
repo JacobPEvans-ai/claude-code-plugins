@@ -59,6 +59,7 @@ const JOB_STATUS_BUDGET_MS = 3_000
 const JOB_STATUS_TIMEOUT_MS = 15_000
 const JOB_LOG_BYTES = 131_072
 const LOG_TIMEOUT_MS = 5_000
+let routeTelemetryFailureLogged = false
 const PROMPT_POLICY = 'The jpe-ai-delegation hook places every Agent spawn. Tag self-contained text work [class: text] and put all of its text in the prompt; the hook sends it to an on-host local model first. An untagged spawn is classified by the hook itself, and an explicit tag always remains the override. Every other spawn, and any local answer that fails its check, goes to the subscription executors it is eligible for, ranked by usage pace. ZCode, OpenCode Go and Cursor take only non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository; their output is a ready PR; leak-scan it before merge; never auto-merge. Codex runs Luna at xhigh, the only Codex model and effort (AGENTS.md, \'Delegation routing\'). Tag work that needs network or GitHub writes [needs: network]; it runs on the in-session last rung, never an executor sandbox. Haiku xhigh is always last. Nothing stops because an executor is unavailable. Never Sonnet, Opus or Fable subagents. Never send secrets, credentials, inventory or incident content to any executor. Antigravity stays a second-opinion reviewer, never an executor.'
 
 // A quota read: the instant-query result, or why there is none.
@@ -837,12 +838,73 @@ function hookVersion($: Engine): Promise<string | null> {
   return read
 }
 
+function routeTelemetryHeaders(value: string | undefined): Record<string, string> {
+  const headers: Record<string, string> = {}
+  for (const pair of value?.split(',') ?? []) {
+    const separator = pair.indexOf('=')
+    if (separator <= 0) continue
+    const key = pair.slice(0, separator).trim()
+    if (key) headers[key] = decodeURIComponent(pair.slice(separator + 1).trim())
+  }
+  return headers
+}
+
+function reportRouteTelemetryFailure($: Engine): void {
+  if (routeTelemetryFailureLogged) return
+  routeTelemetryFailureLogged = true
+  try {
+    $.ui.log('ai-delegation: telemetry collector request failed')
+  } catch {
+    // A telemetry notice cannot affect routing.
+  }
+}
+
+async function exportRouteTelemetry($: Engine, line: string, ts_ms: number | null, hook_version: string | null, event: RouteEvent, chosen: string, reason: string): Promise<void> {
+  try {
+    const outcome = await withTimeout($, (async () => {
+      const endpoint = (await $.env.get('OTEL_EXPORTER_OTLP_ENDPOINT'))?.trim().replace(/\/+$/, '')
+      if (!endpoint) return 'unconfigured'
+      const headers = routeTelemetryHeaders(await $.env.get('OTEL_EXPORTER_OTLP_HEADERS'))
+      const record = {
+        ...(ts_ms === null ? {} : { timeUnixNano: (BigInt(ts_ms) * 1_000_000n).toString() }),
+        severityText: 'INFO',
+        body: { stringValue: line },
+        attributes: [
+          { key: 'event.name', value: { stringValue: 'ai_delegation.route' } },
+          { key: 'chosen', value: { stringValue: chosen } },
+          { key: 'reason', value: { stringValue: reason } },
+          { key: 'agent_type', value: { stringValue: event.agent_type } },
+        ],
+      }
+      const payload = {
+        resourceLogs: [{
+          resource: { attributes: [{ key: 'service.name', value: { stringValue: 'ai-delegation' } }] },
+          scopeLogs: [{
+            scope: { name: 'jpe-ai-delegation', version: hook_version },
+            logRecords: [record],
+          }],
+        }],
+      }
+      const response = await $.http.fetch(`${endpoint}/v1/logs`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      return response.ok ? 'sent' : 'refused'
+    })(), LOG_TIMEOUT_MS)
+    if (outcome === 'refused') reportRouteTelemetryFailure($)
+  } catch {
+    reportRouteTelemetryFailure($)
+  }
+}
+
 async function logRoute($: Engine, event: RouteEvent, chosen: string, reason: string): Promise<void> {
   try {
     // A clock that does not answer in time leaves ts_ms null rather than dropping the line.
     const ts_ms = await clockNow($)
     const hook_version = await hookVersion($)
-    await logDecision($, JSON.stringify({ ts_ms, hook_version, event: 'route', ...event, chosen, reason }))
+    const line = JSON.stringify({ ts_ms, hook_version, event: 'route', ...event, chosen, reason })
+    if (await logDecision($, line)) await exportRouteTelemetry($, line, ts_ms, hook_version, event, chosen, reason)
   } catch {
     // The log is advisory.
   }
@@ -1167,6 +1229,7 @@ export const register: Register = (on) => {
   quotaAt = 0
   localWindows = undefined
   executorTable = undefined
+  routeTelemetryFailureLogged = false
 
   // Start the first quota read without delaying the session.
   on('session.start', async ($, e, next) => {

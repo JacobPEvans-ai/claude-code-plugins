@@ -31,6 +31,7 @@ type World = {
   quotaFileTypes?: Record<string, 'file' | 'directory' | 'symlink'>
   readThrows?: string; readHangs?: string
   envThrows?: string; clockThrows?: boolean; clockHangs?: boolean; teeThrows?: boolean; teeExit?: number; nextRejects?: boolean
+  collectorStatus?: number; collectorThrows?: boolean; collectorTimeout?: boolean
   localDefaultWindow?: number
 }
 
@@ -50,7 +51,8 @@ function world(w: World = {}) {
   const quotaFetches: string[] = []
   const quotaHeaders: Record<string, string>[] = []
   // Every request with its full URL and headers, and every path touched through fs.
-  const allFetches: { url: string; headers: Record<string, string>; body?: string }[] = []
+  const allFetches: { url: string; method?: string; headers: Record<string, string>; body?: string }[] = []
+  const timeoutCallbacks = new Map<number, () => void>()
   const fsTouches: string[] = []
   const fsReads: string[] = []
   const fsStats: { path: string; resolve?: boolean }[] = []
@@ -92,7 +94,7 @@ function world(w: World = {}) {
   const $ = {
     env: { get: async (key: string) => { if (key === w.envThrows) throw new Error('environment read failed'); return env[key] } },
     session: { cwd: async () => '/workspace' },
-    clock: { now: async () => { if (w.clockThrows) throw new Error('clock failed'); if (w.clockHangs) return new Promise<number>(() => {}); return clockNow }, after: (delay: number, callback: () => void) => { if ((w.childHangs && delay === 1_500_000) || (w.clockHangs && delay === 5_000) || (w.gatewayTimeout && (delay === 20_000 || (delay >= 60_000 && delay < 1_500_000))) || (w.quotaTimeout && delay === 3_000) || (w.classifierTimeout && delay === 20_000) || (w.codexQuota === 'hangs' && delay === 15_000) || (w.statusHangs && (delay === 3_000 || delay === 15_000))) Promise.resolve().then(callback); return { cancel() {} } } },
+    clock: { now: async () => { if (w.clockThrows) throw new Error('clock failed'); if (w.clockHangs) return new Promise<number>(() => {}); return clockNow }, after: (delay: number, callback: () => void) => { if ((w.childHangs && delay === 1_500_000) || (w.clockHangs && delay === 5_000) || (w.gatewayTimeout && (delay === 20_000 || (delay >= 60_000 && delay < 1_500_000))) || (w.quotaTimeout && delay === 3_000) || (w.classifierTimeout && delay === 20_000) || (w.codexQuota === 'hangs' && delay === 15_000) || (w.statusHangs && (delay === 3_000 || delay === 15_000))) Promise.resolve().then(callback); if (w.collectorTimeout && delay === 5_000) timeoutCallbacks.set(delay, callback); return { cancel() { timeoutCallbacks.delete(delay) } } } },
     ui: { log: (line: string) => logs.push(line) },
     plugin: { name: 'jpe-ai-delegation', root: w.pluginRoot ?? '' },
     fs: {
@@ -161,8 +163,8 @@ function world(w: World = {}) {
       }
       return RAN
     } },
-    http: { fetch: async (url: string, init: { body?: string; headers?: Record<string, string> }) => {
-      allFetches.push({ url, headers: { ...init.headers }, body: init.body })
+    http: { fetch: async (url: string, init: { method?: string; body?: string; headers?: Record<string, string> }) => {
+      allFetches.push({ url, ...(init.method ? { method: init.method } : {}), headers: { ...init.headers }, body: init.body })
       if (url.includes('/api/v1/query?')) {
         quotaFetches.push(url)
         quotaHeaders.push({ ...init.headers })
@@ -179,6 +181,15 @@ function world(w: World = {}) {
         return { ok: true, text: JSON.stringify(instantQuery([...series('codex', codex, at), ...(w.cursorWindows ? series('cursor', w.cursorWindows, at) : [])])) }
       }
       fetches.push({ url, body: init.body })
+      if (url.endsWith('/v1/logs')) {
+        if (w.collectorThrows) throw new Error('collector request failed')
+        if (w.collectorTimeout) {
+          Promise.resolve().then(() => timeoutCallbacks.get(5_000)?.())
+          return new Promise<never>(() => {})
+        }
+        const status = w.collectorStatus ?? 200
+        return { ok: status >= 200 && status < 300, status, text: '' }
+      }
       if (url.startsWith('https://api.github.com/repos/')) {
         if (w.githubError) throw new Error('visibility unavailable')
         const value = url.includes('/properties/values') ? w.properties ?? [] : url.includes('/pulls/') ? w.pr ?? PR : w.repository ?? { visibility: 'public', private: false }
@@ -2601,6 +2612,108 @@ describe('route telemetry', () => {
       expect(lines[0]).toMatchObject({ chosen, reason })
     })
   }
+})
+
+describe('route telemetry collector', () => {
+  const endpoint = 'http://collector.example.test:4318'
+  const collectorFetches = (w: ReturnType<typeof world>) => w.allFetches.filter((fetch) => fetch.url.endsWith('/v1/logs'))
+
+  test('does not send a collector request when the endpoint is unset', async () => {
+    const w = world()
+    await w.agent()
+    expect(collectorFetches(w)).toHaveLength(0)
+  })
+
+  test('posts one OTLP JSON record per route line with its exact file line as the body', async () => {
+    const w = world({
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: endpoint },
+      pluginRoot: '/plugin-collector',
+      files: { '/plugin-collector/.claude-plugin/plugin.json': '{"version":"9.9.9"}' },
+    })
+    await w.agent()
+    await w.agent()
+
+    const lines = w.writes.filter((line) => line.startsWith('{')).flatMap((line) => line.trim().split('\n')).filter((line) => JSON.parse(line).event === 'route')
+    const requests = collectorFetches(w)
+    expect(requests).toHaveLength(lines.length)
+    for (const [index, request] of requests.entries()) {
+      expect(request.url).toBe(`${endpoint}/v1/logs`)
+      const route = JSON.parse(lines[index])
+      const payload = JSON.parse(request.body!)
+      const resourceLog = payload.resourceLogs[0]
+      const record = resourceLog.scopeLogs[0].logRecords[0]
+      expect(request.method).toBe('POST')
+      expect(request).toMatchObject({ headers: { 'content-type': 'application/json' } })
+      expect(resourceLog.resource.attributes).toEqual([{ key: 'service.name', value: { stringValue: 'ai-delegation' } }])
+      expect(resourceLog.scopeLogs[0].scope).toEqual({ name: 'jpe-ai-delegation', version: '9.9.9' })
+      expect(record.timeUnixNano).toBe((BigInt(route.ts_ms) * 1_000_000n).toString())
+      expect(record.severityText).toBe('INFO')
+      expect(record.body).toEqual({ stringValue: lines[index] })
+      expect(record.attributes).toEqual([
+        { key: 'event.name', value: { stringValue: 'ai_delegation.route' } },
+        { key: 'chosen', value: { stringValue: route.chosen } },
+        { key: 'reason', value: { stringValue: route.reason } },
+        { key: 'agent_type', value: { stringValue: route.agent_type } },
+      ])
+      expect(lines[index]).not.toContain('Implement the change.')
+    }
+  })
+
+  test('removes a trailing slash from the configured endpoint', async () => {
+    const w = world({ env: { OTEL_EXPORTER_OTLP_ENDPOINT: `${endpoint}/` } })
+    await w.agent()
+    expect(collectorFetches(w).map((fetch) => fetch.url)).toEqual([`${endpoint}/v1/logs`])
+  })
+
+  test('parses and sends URL-encoded OTLP headers', async () => {
+    const w = world({ env: {
+      OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+      OTEL_EXPORTER_OTLP_HEADERS: 'x-label=hello%20world,Authorization=Bearer%20test%3Dvalue',
+    } })
+    await w.agent()
+    expect(collectorFetches(w)[0].headers).toMatchObject({
+      'x-label': 'hello world',
+      Authorization: 'Bearer test=value',
+      'content-type': 'application/json',
+    })
+  })
+
+  for (const [failure, options] of [
+    ['HTTP 500', { collectorStatus: 500 }],
+    ['timeout', { collectorTimeout: true }],
+    ['thrown fetch error', { collectorThrows: true }],
+  ] as const) {
+    test(`a collector ${failure} preserves the route result and file line`, async () => {
+      const baseline = world()
+      const expected = text(await baseline.agent())
+      const w = world({ ...options, env: { OTEL_EXPORTER_OTLP_ENDPOINT: endpoint } })
+      expect(text(await w.agent())).toBe(expected)
+      expect(routeEvents(w).filter((event) => event.event === 'route')).toHaveLength(1)
+      expect(collectorFetches(w)).toHaveLength(1)
+      expect(w.logs.filter((line) => line === 'ai-delegation: telemetry collector request failed')).toHaveLength(1)
+      expect(w.logs.join('\n')).not.toContain(endpoint)
+    })
+  }
+
+  test('logs only one generic notice per session when the collector refuses multiple routes', async () => {
+    const w = world({ collectorStatus: 500, env: {
+      OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+      OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer%20test-value',
+    } })
+    await w.agent()
+    await w.agent()
+    expect(collectorFetches(w)).toHaveLength(2)
+    expect(w.logs.filter((line) => line === 'ai-delegation: telemetry collector request failed')).toHaveLength(1)
+    expect(w.logs.join('\n')).not.toContain('test-value')
+  })
+
+  test('omits timeUnixNano when the route timestamp is null', async () => {
+    const w = world({ clockThrows: true, env: { OTEL_EXPORTER_OTLP_ENDPOINT: endpoint } })
+    await w.agent({ model: 'sonnet' })
+    const record = JSON.parse(collectorFetches(w)[0].body!).resourceLogs[0].scopeLogs[0].logRecords[0]
+    expect(routeEvents(w).at(-1)).toMatchObject({ ts_ms: null })
+    expect(record).not.toHaveProperty('timeUnixNano')
+  })
 })
 
 describe('route telemetry failures', () => {

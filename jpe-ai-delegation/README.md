@@ -18,6 +18,7 @@ This plugin is specific to the maintainer's own setup and is not intended for ge
   terminal rung after every executor fails, runs on Haiku; an `agent.spawn` hook sets the model, because the Agent tool
   has no model parameter
 - **Sandbox executors** - Qwen (`opencode-qwen`) ranks first for public coding, ahead of ZCode, OpenCode Go and Cursor
+- **Route telemetry** - Route events also go to the session's telemetry collector when one is configured
 
 ## Installation
 
