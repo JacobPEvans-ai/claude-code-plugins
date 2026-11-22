@@ -47,28 +47,72 @@ if [[ -f "$file_path" ]]; then
 fi
 
 # Consult the small router capability for nuanced evaluation
-# Fail-open: if curl fails or model is unreachable, allow
-response=$(curl -s --max-time 5 http://localhost:11434/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d "$(jq -n \
-        --arg fp "$file_path" \
-        '{
-            model: "small",
-            chat_template_kwargs: {enable_thinking: false},
-            messages: [{
-                role: "user",
-                content: ("You are a script-prevention guardrail. A file is being created at: " + $fp + "\n\nIs this a legitimate committed artifact (CI workflow, plugin hook, test fixture, build tool) or an unnecessary custom script?\n\nRespond with ONLY '\''allow'\'' or '\''deny'\'' followed by a brief reason.")
-            }],
-            max_tokens: 100,
-            temperature: 0
-        }')" 2>/dev/null) || { exit 0; }
+judge_url="${GUARD_JUDGE_URL:-http://localhost:11434/v1/chat/completions}"
+judge_down_closed=0
+if [[ -n "${CI:-}" ]] || [[ "${GUARD_JUDGE_DOWN:-}" == "closed" ]]; then
+    judge_down_closed=1
+fi
 
-# Parse response (fail-open on parse errors)
-decision=$(echo "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null) || { exit 0; }
+# Return success only when a decision was received. Transport, HTTP, parse, and
+# undecided responses are all treated as judge-down.
+ask_judge() {
+    local response decision_line
+
+    response=$(curl -fsS --max-time 30 "$judge_url" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n \
+            --arg fp "$file_path" \
+            '{
+                model: "small",
+                chat_template_kwargs: {enable_thinking: false},
+                messages: [{
+                    role: "user",
+                    content: ("You are a script-prevention guardrail. A file is being created at: " + $fp + "\n\nIs this a legitimate committed artifact (CI workflow, plugin hook, test fixture, build tool) or an unnecessary custom script?\n\nRespond with ONLY '\''allow'\'' or '\''deny'\'' followed by a brief reason.")
+                }],
+                max_tokens: 100,
+                temperature: 0
+            }')" 2>/dev/null) || return 1
+
+    decision=$(printf '%s' "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null) || return 1
+    decision_line=$(printf '%s\n' "$decision" | head -1 | sed 's/^[[:space:]]*//')
+    case "$decision_line" in
+        # The whole first word must be the decision: "allowance" is not an answer.
+        [Dd][Ee][Nn][Yy] | [Dd][Ee][Nn][Yy][!A-Za-z]*) judge_decision=deny ;;
+        [Aa][Ll][Ll][Oo][Ww] | [Aa][Ll][Ll][Oo][Ww][!A-Za-z]*) judge_decision=allow ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+log_judge_down() {
+    local outcome="$1" target log_dir timestamp
+    target=$(printf '%s' "$file_path" | tr '\r\n\t' '   ' | cut -c1-80)
+    log_dir="${CLAUDE_PLUGIN_DATA:-$HOME/.claude}"
+    timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    mkdir -p "$log_dir" 2>/dev/null || return 0
+    printf '%s guard=write-script-guard decision=%s path=%s\n' \
+        "$timestamp" "$outcome" "$target" >> "$log_dir/content-guards.log" 2>/dev/null || true
+}
+
+if ! ask_judge; then
+    if [[ "$judge_down_closed" -eq 1 ]]; then
+        # Fail-closed environments get one retry before the judge is considered down.
+        if ! ask_judge; then
+            log_judge_down judge_down_block
+            printf '%s\n' \
+                'The script judge is unreachable and this environment fails closed. Retry, or put the file under an allowed path (scripts/, hooks/, .github/, tests/).' \
+                'Actual exempt paths: scripts/, hooks/, .github/, tests/, test/, plugins/.' >&2
+            exit 2
+        fi
+    else
+        log_judge_down judge_down_allow
+        exit 0
+    fi
+fi
 
 # Check if response starts with "deny" (case-insensitive)
-if echo "$decision" | head -1 | grep -qi '^deny'; then
-    reason="${decision#[Dd]eny}"
+if [[ "$judge_decision" == "deny" ]]; then
+    reason="${decision#[Dd][Ee][Nn][Yy]}"
     reason="${reason#"${reason%%[![:space:]]*}"}"
     jq -n --arg fp "$file_path" --arg reason "$reason" '{
         hookSpecificOutput: {
@@ -80,5 +124,5 @@ if echo "$decision" | head -1 | grep -qi '^deny'; then
     exit 2
 fi
 
-# Allow by default (model said allow, or response could not be parsed)
+# The judge explicitly allowed the script.
 exit 0

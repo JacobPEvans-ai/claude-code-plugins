@@ -57,7 +57,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/scripts/write-script-guard.sh",
-            "timeout": 10
+            "timeout": 70
           }
         ]
       },
