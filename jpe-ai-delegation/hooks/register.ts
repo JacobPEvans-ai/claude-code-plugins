@@ -204,8 +204,8 @@ async function nativeCodexQuota($: Engine): Promise<NativeQuota> {
   return read
 }
 
-// A failed on-host harness row sits out for the same ten-minute window as a failed native quota read.
-async function recentHarnessFailure($: Engine, executor: Executor, now: number): Promise<boolean> {
+// The key prefix stays stable so harness failures persisted by older hook versions still cool down.
+async function recentExecutorFailure($: Engine, executor: Executor, now: number): Promise<boolean> {
   if (!Number.isFinite(now)) return false
   try {
     const failedAt = await $.store.get(`${HARNESS_FAILURE_KEY}${executor}`)
@@ -215,7 +215,7 @@ async function recentHarnessFailure($: Engine, executor: Executor, now: number):
   }
 }
 
-async function recordHarnessFailure($: Engine, executor: Executor, at: number | null): Promise<void> {
+async function recordExecutorFailure($: Engine, executor: Executor, at: number | null): Promise<void> {
   if (at === null) return
   try {
     await $.store.set(`${HARNESS_FAILURE_KEY}${executor}`, at)
@@ -328,6 +328,7 @@ async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: 
   const reason = failure ?? 'unknown failure'
   $.ui.log(`ai-delegation: Codex failed: ${reason}`)
   await logDecision($, `codex failure: ${reason}`)
+  await recordExecutorFailure($, 'codex', await clockNow($))
   return undefined
 }
 
@@ -861,6 +862,52 @@ async function stopRoute($: Engine, e: AgentCall, event: RouteEvent, reason: str
   return failure(e, reason)
 }
 
+type RouteGuards =
+  | { allowed: true; call: AgentCall; definition?: AgentDefinition; customSandbox?: Sandbox }
+  | { allowed: false; result: unknown }
+
+// Model, agent-definition and payload checks run before any executor or terminal dispatch, including after an error.
+async function routeGuards($: Engine, e: AgentCall, event: RouteEvent): Promise<RouteGuards> {
+  if (forbiddenModel(e.model) || forbiddenModel(e.subagent_type)) {
+    return { allowed: false, result: await stopRoute($, e, event, 'Sonnet, Opus and Fable subagents are forbidden') }
+  }
+  let call = e
+  let definition: AgentDefinition | undefined
+  let customSandbox: Sandbox | undefined
+  if (call.subagent_type && !isGenericType(call)) {
+    try {
+      definition = await customAgentDefinition($, call.subagent_type)
+    } catch {
+      return { allowed: false, result: await stopRoute($, e, event, 'custom agent model or tool restrictions could not be read') }
+    }
+    event.agent_type = agentType(e, definition !== undefined)
+    // No agent file: a built-in or plugin agent, which takes the native path below with its model pinned. A name
+    // that cannot be an agent type still stops.
+    if (!definition && !/^[\w:.-]{1,80}$/.test(call.subagent_type)) {
+      return { allowed: false, result: await stopRoute($, e, event, 'custom agent definition could not be verified') }
+    }
+    if (definition) {
+      if (forbiddenModel(definition.model)) {
+        return { allowed: false, result: await stopRoute($, e, event, 'Sonnet, Opus and Fable subagents are forbidden') }
+      }
+      customSandbox = customAgentSandbox(definition)
+      if (definition.prompt) call = { ...call, prompt: `Custom agent instructions:\n${definition.prompt}\n\nTask:\n${call.prompt}` }
+    }
+  }
+  if (!safePayload(`${call.description ?? ''}\n${call.prompt}`)) {
+    return { allowed: false, result: await stopRoute($, e, event, 'payload contains prohibited content') }
+  }
+  return { allowed: true, call, definition, customSandbox }
+}
+
+async function routeCore(next: (e: never) => Promise<unknown>, value: AgentCall): Promise<unknown> {
+  try {
+    return await next(value as never)
+  } catch {
+    return failure(value, 'routing failed closed')
+  }
+}
+
 // A background spawn returns at once. The same route runs detached with the spawn in the foreground; the terminal rung
 // starts a last-rung agent through $.agent.spawn, which reports on its own, and the routed result arrives through
 // $.prompt.submit, queued until the session is idle.
@@ -889,43 +936,20 @@ function startBackground($: Engine, call: AgentCall): unknown {
 async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknown>): Promise<unknown> {
   const event = newEvent(e)
   // The route line is already written when core runs, so a core failure returns FAIL without a second line.
-  const core = async (value: AgentCall): Promise<unknown> => {
-    try {
-      return await next(value as never)
-    } catch {
-      return failure(value, 'routing failed closed')
-    }
-  }
-  if (forbiddenModel(e.model) || forbiddenModel(e.subagent_type)) return stopRoute($, e, event, 'Sonnet, Opus and Fable subagents are forbidden')
   const original = e
-  let definition: AgentDefinition | undefined
-  let customSandbox: Sandbox | undefined
-  if (e.subagent_type && !isGenericType(e)) {
-    try {
-      definition = await customAgentDefinition($, e.subagent_type)
-    } catch {
-      return stopRoute($, e, event, 'custom agent model or tool restrictions could not be read')
-    }
-    event.agent_type = agentType(original, definition !== undefined)
-    // No agent file: a built-in or plugin agent, which takes the native path below with its model pinned. A name
-    // that cannot be an agent type still stops.
-    if (!definition && !/^[\w:.-]{1,80}$/.test(e.subagent_type)) return stopRoute($, e, event, 'custom agent definition could not be verified')
-    if (definition) {
-      if (forbiddenModel(definition.model)) return stopRoute($, e, event, 'Sonnet, Opus and Fable subagents are forbidden')
-      customSandbox = customAgentSandbox(definition)
-      if (definition.prompt) e = { ...e, prompt: `Custom agent instructions:\n${definition.prompt}\n\nTask:\n${e.prompt}` }
-    }
-  }
-  if (!safePayload(`${e.description ?? ''}\n${e.prompt}`)) return stopRoute($, e, event, 'payload contains prohibited content')
+  const guards = await routeGuards($, e, event)
+  if (!guards.allowed) return guards.result
+  e = guards.call
+  const { definition, customSandbox } = guards
   if (e.subagent_type && !isGenericType(e) && customSandbox === undefined) {
     // The agent.spawn hook pins the model, so an inherited model never reaches the subagent.
     await logRoute($, event, 'native custom agent', 'custom tool policy')
-    return core(original)
+    return routeCore(next, original)
   }
   // Network or GitHub-write work runs in the session: executor sandboxes deny egress and never hold credentials.
   if (networkTask(original.description, original.prompt) || definition?.egress === 'network') {
     await logRoute($, event, LAST_RESORT.model, 'network work')
-    return core({ ...original, effort: LAST_RESORT.effort })
+    return routeCore(next, { ...original, effort: LAST_RESORT.effort })
   }
   if (original.run_in_background === true) {
     await logRoute($, event, 'background', 'run_in_background')
@@ -974,7 +998,7 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
   const { scores } = quota
   const activeRows: ExecutorRow[] = []
   for (const row of rows) {
-    if (row.transport === 'harness' && await recentHarnessFailure($, row.id, now)) skipped[row.id] = 'recent_failures'
+    if (await recentExecutorFailure($, row.id, now)) skipped[row.id] = 'recent_failures'
     else activeRows.push(row)
   }
   event.quota_unknown = quota.unknown
@@ -1020,7 +1044,7 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
       if (!result) {
         skipped[executor] = 'failed'
         const ended = await clockNow($)
-        await recordHarnessFailure($, executor, ended ?? startedAt)
+        await recordExecutorFailure($, executor, ended ?? startedAt)
         if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
       }
     } else if (row.transport === 'codex') {
@@ -1065,7 +1089,7 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
   }
   // No executor took the task: the terminal rung runs in core at LAST_RESORT.effort; the agent.spawn hook sets its model.
   await logRoute($, event, LAST_RESORT.model, 'terminal rung')
-  return core({ ...original, effort: LAST_RESORT.effort })
+  return routeCore(next, { ...original, effort: LAST_RESORT.effort })
 }
 
 // One judge ask on the on-host medium alias, the same endpoint classifyKind uses: a parsed verdict, or why there is
@@ -1134,7 +1158,14 @@ ${PROMPT_POLICY}`, scope: 'session' }] }
   }).catch(($, e, next) => next(e))
 
   // An unexpected router failure must not bypass the model and payload guards.
-  on('tool.call', { tool: 'Agent' }, ($, e, next) => route($, e as never, next as never) as never).catch(($, e) => stopRoute($, e as never, newEvent(e as never), 'routing failed closed') as never)
+  on('tool.call', { tool: 'Agent' }, ($, e, next) => route($, e as never, next as never) as never).catch(async ($, e, next) => {
+    const original = e as AgentCall
+    const event = newEvent(original)
+    const guards = await routeGuards($, original, event)
+    if (!guards.allowed) return guards.result
+    await logRoute($, event, LAST_RESORT.model, 'terminal rung after error')
+    return routeCore(next as never, { ...original, effort: LAST_RESORT.effort })
+  })
 
   // Every Agent tool spawn that reaches core runs on LAST_RESORT.model. The Agent tool has no model parameter, so the
   // pin is set here, where the engine decides the spawn's model. Forks inherit by design; workflow agents, teammates

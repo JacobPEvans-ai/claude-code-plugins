@@ -2158,6 +2158,22 @@ describe('harness executor', () => {
     expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(firstCount + 2)
     expect(routeEvents(w).at(-1)).toMatchObject({ skipped: { 'homelab-harness': 'failed', 'host-harness': 'failed' } })
   })
+  test('failed Codex rows cool down for ten minutes and become eligible again after expiry', async () => {
+    const w = world({ quotaUrl: null, codexQuota: 'codex-quota: available {"p":40,"s":null}', codexExit: 1 })
+    await w.agent()
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'haiku', skipped: { codex: 'failed' } })
+    expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(1)
+
+    w.setNow(1_599_999)
+    await w.agent()
+    expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(1)
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'haiku', skipped: { codex: 'recent_failures' } })
+
+    w.setNow(1_600_001)
+    await w.agent()
+    expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(2)
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'haiku', skipped: { codex: 'failed' } })
+  })
   test('without a router base URL the harness rows are skipped as not_installed and no child runs', async () => {
     const w = world({})
     expect(text(await w.agent())).toContain('[routed: codex luna xhigh')
@@ -2493,7 +2509,7 @@ describe('route telemetry', () => {
     ['sandbox executor', { quota: 1, env: gateways }, coding, 'qwen', 'highest-ranked eligible executor that answered'],
     ['sandbox job without a verified PR', { quota: 1, env: gateways, zcodeOutput: 'DONE|j-0123456789abcdef|no-pr\n' }, coding, 'qwen', 'sandbox job without a verified PR'],
     ['terminal rung', { quota: 1, zcodeAvailable: false }, {}, 'haiku', 'terminal rung'],
-    ['routing failed closed', { env: gateways, envThrows: 'LITELLM_LOCAL_BASE_URL' }, textTask, 'stopped', 'routing failed closed'],
+    ['terminal rung after route error', { env: gateways, envThrows: 'LITELLM_LOCAL_BASE_URL' }, textTask, LAST_RESORT.model, 'terminal rung after error'],
   ]
   for (const [name, options, call, chosen, reason] of exits) {
     test(`every route exit writes one JSON route line: ${name}`, async () => {
@@ -2507,6 +2523,31 @@ describe('route telemetry', () => {
 })
 
 describe('route telemetry failures', () => {
+  test('a post-guard routing error dispatches the terminal rung', async () => {
+    const call = { tool: 'Agent', description: '[class: text] summarize this request', prompt: '[class: text] summarize this request' }
+    const w = world({ env: gateways, envThrows: 'LITELLM_LOCAL_BASE_URL' })
+    await w.agent(call)
+    expect(w.nextCalls.at(-1)).toEqual(terminal(call))
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: LAST_RESORT.model, reason: 'terminal rung after error' })
+  })
+  test('an error before guard completion still stops a prohibited payload', async () => {
+    let firstRead = true
+    const call = {
+      tool: 'Agent',
+      prompt: 'Use token=abc123 here.',
+      get model() {
+        if (firstRead) {
+          firstRead = false
+          throw new Error('model read failed')
+        }
+        return undefined
+      },
+    }
+    const w = world()
+    expect(text(await w.invoke('tool.call', call))).toContain('payload contains prohibited content')
+    expect(w.nextCalls).toHaveLength(0)
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'stopped', reason: 'payload contains prohibited content' })
+  })
   test('a rejected clock never turns a stop into a rejection, and the route line is still written', async () => {
     const w = world({ clockThrows: true })
     expect(text(await w.agent({ model: 'sonnet' }))).toContain('subagents are forbidden')
