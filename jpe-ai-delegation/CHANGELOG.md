@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.30.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.30.0...jpe-ai-delegation-v1.30.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** an explicit class tag is never classified as text ([#889](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/889)) ([dc91ddd](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/dc91ddd8abd3f683236435215ddbc45941f604dd))
+
 ## [1.30.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.29.0...jpe-ai-delegation-v1.30.0) (2026-11-22)
 
 
