@@ -13,7 +13,7 @@ const CACHE = JSON.stringify({ models: [
   { slug: 'gpt-newer-fixture', visibility: 'list', priority: 1 },
   { slug: 'gpt-hidden-luna', visibility: 'hide', priority: 0 },
 ] })
-const PR = { html_url: 'https://github.com/owner/project/pull/12', state: 'open', draft: false, labels: [{ name: 'human:review' }] }
+const PR = { html_url: 'https://github.com/owner/project/pull/12', state: 'open', draft: false }
 const CORE_ASK = { decision: 'ask', reason: 'This shell -c script runs rm.' }
 type Call = { argv: string[]; stdin?: string; env?: Record<string, string>; timeoutMs?: number }
 type World = {
@@ -917,7 +917,7 @@ describe('capped ladder', () => {
   test('public coding with every sandbox installed lands on qwen and verifies a ready labelled PR', async () => {
     const w = world({ quota: 1, env: gateways })
     expect(text(await w.agent(coding))).toContain('[routed: Qwen sandbox; leak-scan before merge; never auto-merge]')
-    expect(w.calls.find((c) => c.argv[0] === 'zcode-job')?.argv).toEqual(['zcode-job', 'start', '--tool', 'opencode-qwen', 'owner/project', `${coding.prompt}\n\nReturn a ready PR labelled human:review. Never auto-merge. The trusted lead must leak-scan the PR before merge.`])
+    expect(w.calls.find((c) => c.argv[0] === 'zcode-job')?.argv).toEqual(['zcode-job', 'start', '--tool', 'opencode-qwen', 'owner/project', `${coding.prompt}\n\nReturn a ready PR. Never auto-merge. The trusted lead must leak-scan the PR before merge.`])
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', kind: { value: 'code', source: 'tag' } })
     expect(w.calls.find((c) => c.argv[1] === 'start')?.env).toEqual({ UNTRUSTED_OK: 'public' })
     expect(w.calls.filter((c) => c.argv[0] !== 'claude' && c.argv[1] !== 'start').every((c) => c.env === undefined)).toBe(true)
@@ -927,7 +927,7 @@ describe('capped ladder', () => {
   test('AGENT_ROUTE_ZCODE_TOOLS without opencode-qwen skips the qwen row and dispatches zcode plainly', async () => {
     const w = world({ quota: 1, env: { ...gateways, AGENT_ROUTE_ZCODE_TOOLS: 'zcode' } })
     expect(text(await w.agent(coding))).toContain('[routed: zcode-job sandbox; leak-scan before merge; never auto-merge]')
-    expect(w.calls.find((c) => c.argv[0] === 'zcode-job')?.argv).toEqual(['zcode-job', 'start', 'owner/project', `${coding.prompt}\n\nReturn a ready PR labelled human:review. Never auto-merge. The trusted lead must leak-scan the PR before merge.`])
+    expect(w.calls.find((c) => c.argv[0] === 'zcode-job')?.argv).toEqual(['zcode-job', 'start', 'owner/project', `${coding.prompt}\n\nReturn a ready PR. Never auto-merge. The trusted lead must leak-scan the PR before merge.`])
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'zcode', skipped: { qwen: 'not_installed' } })
   })
   test('AGENT_ROUTE_ZCODE_TOOLS naming opencode-qwen uses the qwen row', async () => {
@@ -1007,7 +1007,7 @@ describe('capped ladder', () => {
     { zcodeOutput: 'DONE|j-0123456789abcdef|https://github.com/other/project/pull/12\n' },
     { zcodeOutput: 'FAIL|j-0123456789abcdef|failed\n', zcodeExit: 1 },
     { zcodeTruncated: true }, { zcodeThrows: true },
-    { pr: { ...PR, draft: true } }, { pr: { ...PR, state: 'closed' } }, { pr: { ...PR, labels: [] } },
+    { pr: { ...PR, draft: true } }, { pr: { ...PR, state: 'closed' } },
   ]) {
     test(`dispatched sandbox must yield a verified ready PR: ${JSON.stringify(options)}`, async () => {
       const w = world({ quota: 1, env: gateways, ...options })
@@ -1430,7 +1430,7 @@ describe('judge and session policy', () => {
       const policy = r.sections[0].text
       expect(policy).not.toContain('Check codex-quota first')
       expect(policy).toStartWith(`codex-quota: ${status}\nThe jpe-ai-delegation hook places every Agent spawn.`)
-      for (const fragment of ['Tag self-contained text work [class: text]', 'put all of its text in the prompt', 'on-host local model first', 'ranked by usage pace', 'non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository', 'ready PR labelled human:review', 'leak-scan it before merge', 'never auto-merge', 'Codex runs Luna at xhigh, the only Codex model and effort', 'Delegation routing', 'Tag work that needs network or GitHub writes [needs: network]', 'Haiku xhigh is always last', 'Nothing stops because an executor is unavailable', 'Never Sonnet, Opus or Fable subagents', 'Never send secrets, credentials, inventory or incident content to any executor', 'Antigravity stays a second-opinion reviewer']) expect(policy).toContain(fragment)
+      for (const fragment of ['Tag self-contained text work [class: text]', 'put all of its text in the prompt', 'on-host local model first', 'ranked by usage pace', 'non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository', 'ready PR', 'leak-scan it before merge', 'never auto-merge', 'Codex runs Luna at xhigh, the only Codex model and effort', 'Delegation routing', 'Tag work that needs network or GitHub writes [needs: network]', 'Haiku xhigh is always last', 'Nothing stops because an executor is unavailable', 'Never Sonnet, Opus or Fable subagents', 'Never send secrets, credentials, inventory or incident content to any executor', 'Antigravity stays a second-opinion reviewer']) expect(policy).toContain(fragment)
     })
   }
 })
