@@ -22,13 +22,12 @@ this runs.
 ## Dispatch
 
 <!--
-  WARNING: This skill is executed by a subagent with `bypassPermissions`.
+  WARNING: This skill is executed by a subagent.
   Ensure all subsequent steps are safe for automatic execution without user prompts.
   Do not add operations that would normally be blocked by DENY rules.
 -->
 
-**MANDATORY FIRST STEP**: Spawn a delegate (routing per core AGENTS.md) using the Agent tool with
-`mode: "bypassPermissions"`. Pass all content starting from **Prerequisite: Validate Base Branch**
+**MANDATORY FIRST STEP**: Spawn a delegate (routing per core AGENTS.md) using the Agent tool. Pass all content starting from **Prerequisite: Validate Base Branch**
 through end-of-document as the agent prompt; include the current branch name and PR number.
 Do not execute any steps yourself — the subagent runs the complete workflow autonomously with
 all permissions auto-accepted.

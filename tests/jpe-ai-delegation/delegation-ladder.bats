@@ -30,11 +30,13 @@ setup() {
   [ "$status" -eq 1 ]
 }
 
-@test "skill states the first step, sensitivity split, quota spending, gates and last resort" {
-  for rule in 'codex-quota' 'quick, checkable tasks' 'router local default or medium capability before any subscription' 'escalate only after a checked failure' 'equal first choices' 'split by sensitivity' 'obvious, definitely non-sensitive' 'public repos' 'coding-adjacent only' 'GitHub automation and workflows' 'internet-open container' 'anything even remotely sensitive' 'or any private repo' "AGENTS.md, 'Delegation routing'" 'more than 5% left' '[class: bulk-complex]' 'usage-pace order' 'ZCode 5-hour and weekly' 'OpenCode Go monthly' 'Codex weekly' 'Public work only' 'at or under its pace for the billing period' 'Haiku `xhigh`, the last resort' 'before the orchestrator works solo' 'Leak-scan' 'Never auto-merge' 'Never Sonnet, Opus or Fable' 'Never send secrets, credentials, inventory or incident content' 'second-opinion reviewer'; do
+@test "skill points at the routing statement and keeps only procedure" {
+  for rule in 'codex-quota' "AGENTS.md, 'Delegation routing'" 'not restate it' 'more than 5% left' '[class: bulk-complex]' 'obvious, definitely non-sensitive' 'public repos' 'Leak-scan' 'Never auto-merge' 'second-opinion reviewer' 'does not read quota'; do
     run grep -F "$rule" "$SKILL"
     [ "$status" -eq 0 ]
   done
+  run grep -E 'first rung that qualifies|equal first choices|Qwen first|spend every' "$SKILL"
+  [ "$status" -eq 1 ]
 }
 
 @test "skill and reference no longer describe bypasses or retired routes" {
