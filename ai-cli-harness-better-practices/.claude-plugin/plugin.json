@@ -20,6 +20,7 @@
     "./skills/session-status",
     "./skills/replan",
     "./skills/wrap-up",
-    "./skills/track-followups"
+    "./skills/track-followups",
+    "./skills/work-management"
   ]
 }

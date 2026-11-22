@@ -18,6 +18,8 @@ The default `/wrap-up` does not.
   `/agentops:postmortem`, `/agentops:craft-goal` and `/agentops:doc`.
 - **`/track-followups`** — File triaged follow-ups in the task tracker or the
   incident system; `/agentops:triage` decides untriaged items first.
+- **`/work-management`** — Start work from a tracker card, rank a card or epic,
+  or run the weekly review by the work management standard.
 - **Superseded shims** — `/goal` (use `/agentops:craft-goal`), `/session-status`
   and `/wrap-up-docs` (use `/agentops:doc`), `/replan` (use `/agentops:plan`).
   `/resume` is removed; use `/agentops:doc`.
@@ -28,6 +30,7 @@ The default `/wrap-up` does not.
 /wrap-up                               # end-of-session verdict + forward artifact
 /wrap-up purge-pr 123                  # close one PR and purge its local state
 /track-followups                       # file follow-ups in the right tracker
+/work-management start <card>          # start work from a tracker card
 ```
 
 Both skills run without a repository. In a git repository they add branch and PR

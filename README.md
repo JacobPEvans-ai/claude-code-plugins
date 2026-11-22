@@ -9,7 +9,7 @@ A collection of Claude Code plugins for enhanced development workflows with AI a
 Session continuity for AI CLI agents. No git repository required.
 
 - **Type**: Skill-based plugin
-- **Skills**: `/goal`, `/session-status`, `/replan`, `/wrap-up`, `/track-followups`
+- **Skills**: `/goal`, `/session-status`, `/replan`, `/wrap-up`, `/track-followups`, `/work-management`
 - **Purpose**: Know what you were doing, prove what is actually done, and hand
   that to a session with no memory
 
@@ -186,6 +186,7 @@ invocation. Skill-based plugins provide slash commands:
 /prune-branches           # Delete dead branches and worktrees
 /wrap-up                  # Session-completion verdict + forward artifact
 /track-followups          # File follow-ups in the task or incident tracker
+/work-management start <card> # Start work from a tracker card
 /resolve-codeql           # Fix CodeQL security alerts
 /agentops:orchestrate    # Dispatch and result checks
 /delegation-ladder        # Maintainer-specific executor ladder
