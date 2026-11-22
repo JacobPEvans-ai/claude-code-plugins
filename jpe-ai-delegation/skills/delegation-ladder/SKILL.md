@@ -65,10 +65,11 @@ decision to `~/.claude/ai-delegation.log`:
    in a verified public repository; their dispatcher refuses private ones.
 2. Local. A generic, non-isolated, non-code spawn marked `[class: text]` goes
    to the on-host `small` alias, or `local-only` when the prompt is larger.
-   A spawn carrying neither `[class: text]` nor `[task: code]` is classified
+   A generic spawn without a recognized class tag or `[task: code]` is classified
    once on the on-host `small` alias: `text` takes this rung, `code` makes the
-   sandboxes eligible, and `other` changes nothing; an explicit tag is always
-   the override, and a failed classification is `other`.
+   sandboxes eligible, and `other` changes nothing; recognized tags override
+   classification, and a failed classification is `other`.
+   A recognized explicit class tag other than `text` is never classified and never takes this rung.
    Put all of the task's text in the prompt; the local model has no tools. The token estimate (characters / 3.5 plus 2048 output) must fit in
    60% of the alias's context window from the router's `/model/info`. An empty
    answer, a length cut-off, an error or a timeout falls through.
@@ -91,8 +92,8 @@ decision to `~/.claude/ai-delegation.log`:
    live window at 95% or more drops out. Order: promotions; at/below-line by distance
    (furthest under), no readings in table order, then over-line by distance (least over).
    Pace line: 0 at start, 100 one day before reset (at reset for <2-day windows); use
-   each executor's smallest distance across windows. Effective score (headroom / (price × peak)) is route-line telemetry only, not ranking. The executor table in
-   `hooks/lib/policy.ts` lists Qwen, ZCode, OpenCode Go, Codex and Cursor, each with
+   each executor's smallest distance across windows. Effective score (headroom / (price × peak)) is route-line telemetry only, not ranking.
+   The executor table in `hooks/lib/policy.ts` lists Qwen, ZCode, OpenCode Go, Codex and Cursor, each with
    transport, trust, `private_ok`, quota executor name, price and peak
    windows (ZCode costs double Mon–Fri 06:00–10:00 UTC). `~/.config/ai-delegation/executors.json` (a JSON
    array of rows) overrides rows by `id` and adds new ones; invalid rows are

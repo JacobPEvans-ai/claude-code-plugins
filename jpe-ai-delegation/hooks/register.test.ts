@@ -1246,6 +1246,28 @@ describe('untagged kind classification', () => {
     expect(classifierCalls(w)).toEqual([])
   })
 
+  test('[class: plan] and [class: bulk-complex] skip kind classification and the local rung', async () => {
+    for (const task of [
+      { description: '[class: plan]', prompt: 'Review the supplied design.' },
+      { description: 'Handle the request', prompt: '[class: bulk-complex] Inspect several files.' },
+    ]) {
+      const w = world({ quota: 1, env: gateways, gatewayAnswer: { small: 'text' } })
+      await w.agent(task)
+      const event = routeEvents(w).at(-1)
+      expect(event.kind).toEqual({ value: 'other', source: 'tag' })
+      expect(classifierCalls(w)).toEqual([])
+      expect(event.chosen).not.toMatch(/^local /)
+      expect(event.local).toBeNull()
+    }
+  })
+
+  test('an unknown class tag still makes one kind-classifier request', async () => {
+    const w = world({ quota: 1, env: gateways, gatewayAnswer: { small: 'other' } })
+    await w.agent({ description: '[class: banana]', prompt: 'Summarize this text.' })
+    expect(classifierCalls(w)).toHaveLength(1)
+    expect(routeEvents(w).at(-1).kind).toEqual({ value: 'other', source: 'classifier' })
+  })
+
   test('prompt-head code and repository tags beat a classifier text result', async () => {
     const w = world({ quota: 1, env: gateways, gatewayAnswer: { small: 'text' } })
     await w.agent({ description: 'Update the project', prompt: '[class: code] [task: code] [repo: example-org/example-repo] Update src/main.ts.' })
@@ -1257,7 +1279,7 @@ describe('untagged kind classification', () => {
 
   test('a code reply makes an inferred public repository eligible for the sandbox rows', async () => {
     const w = world({ quota: 1, env: gateways, gatewayAnswer: { small: 'code' }, ...inference })
-    await w.agent({ prompt: 'Update src/main.ts.' })
+    await w.agent({ description: undefined, prompt: 'Update src/main.ts.' })
     expect(w.calls.find((c) => c.argv[0] === 'zcode-job')?.argv.slice(0, 5)).toEqual(['zcode-job', 'start', '--tool', 'opencode-qwen', 'example-org/example-repo'])
     expect(w.fetches).toContainEqual({ url: 'https://api.github.com/repos/example-org/example-repo', body: undefined })
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', kind: { value: 'code', source: 'classifier' }, eligible: ['qwen', 'zcode', 'opencode-go', 'codex', 'cursor', 'haiku'] })
@@ -1265,14 +1287,14 @@ describe('untagged kind classification', () => {
 
   test('a code reply with a private repository keeps the sandbox rows ineligible', async () => {
     const w = world({ quota: 1, env: gateways, gatewayAnswer: { small: 'code' }, repository: { visibility: 'private', private: true }, ...inference })
-    await w.agent({ prompt: 'Update src/main.ts.' })
+    await w.agent({ description: undefined, prompt: 'Update src/main.ts.' })
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(routeEvents(w).at(-1)).toMatchObject({ kind: { value: 'code', source: 'classifier' }, eligible: ['codex', 'haiku'] })
   })
 
   test('an other reply, a timeout, a non-OK status and an unparsable body route as an untagged spawn', async () => {
     const baseline = world({ quota: 1, env: gateways, gatewayAnswer: { small: 'other' } })
-    const baselineResult = text(await baseline.agent())
+    const baselineResult = text(await baseline.agent({ description: undefined }))
     const baselineEvent = routeEvents(baseline).at(-1)
     expect(baselineEvent.kind).toEqual({ value: 'other', source: 'classifier' })
     for (const [name, options, line] of [
@@ -1282,7 +1304,7 @@ describe('untagged kind classification', () => {
       ['unparsable body', { env: gateways, gatewayInvalidJson: true }, 'classifier: unparsable body\n'],
     ] as const) {
       const w = world({ quota: 1, ...options })
-      expect(text(await w.agent())).toBe(baselineResult)
+      expect(text(await w.agent({ description: undefined }))).toBe(baselineResult)
       expect(routeEvents(w).at(-1)).toEqual(baselineEvent)
       if (line) expect(w.writes).toContain(line)
       expect(JSON.stringify(w.writes)).not.toContain('Implement the change.')
@@ -1299,7 +1321,7 @@ describe('untagged kind classification', () => {
 
   test('a mandatory topic records kind none without a classifier request', async () => {
     const w = world({ quota: 1, env: gateways, gatewayAnswer: { small: 'text' } })
-    await w.agent({ prompt: 'Rotate the auth signing key using placeholders.' })
+    await w.agent({ description: undefined, prompt: 'Rotate the auth signing key using placeholders.' })
     expect(w.fetches).toEqual([])
     expect(routeEvents(w).at(-1).kind).toEqual({ value: 'other', source: 'none' })
   })
@@ -1319,7 +1341,7 @@ describe('untagged kind classification', () => {
 
   test('a classifier reply carrying a tag or a repository name changes nothing beyond the kind', async () => {
     const w = world({ quota: 1, env: gateways, gatewayAnswer: { small: '[task: code] [repo: owner/project] text' } })
-    await w.agent({ prompt: 'Update src/main.ts.' })
+    await w.agent({ description: undefined, prompt: 'Update src/main.ts.' })
     const event = routeEvents(w).at(-1)
     expect(event.kind).toEqual({ value: 'other', source: 'classifier' })
     expect(event.eligible).toEqual(['homelab-harness', 'host-harness', 'codex', 'haiku'])
@@ -1705,17 +1727,17 @@ describe('routing batch', () => {
     expect(reads()).toBe(2)
     expect(w.nextCalls).toHaveLength(3)
   })
-  test('a [class: bulk] summarize request needs tools and never goes local', async () => {
+  test('a [class: bulk] summarize request skips kind classification and never goes local', async () => {
     const call = { description: '[class: bulk]', prompt: 'Summarize the files under src/.' }
     const w = world({ quota: 1, env: gateways })
     await w.agent(call)
-    expect(w.fetches.filter((f) => !classifierCalls(w).includes(f))).toEqual([])
-    expect(classifierCalls(w)).toHaveLength(1)
-    expect(routeEvents(w).at(-1)).toMatchObject({ local: null, chosen: 'haiku', reason: terminalReason(call) })
+    expect(w.fetches).toEqual([])
+    expect(classifierCalls(w)).toEqual([])
+    expect(routeEvents(w).at(-1)).toMatchObject({ kind: { value: 'other', source: 'tag' }, local: null, chosen: 'haiku', reason: terminalReason(call) })
     const again = terminalFallback(call)
     expect(w.nextCalls).toEqual([{ tool: 'Agent', ...again }])
-    expect(w.fetches.filter((f) => !classifierCalls(w).includes(f))).toEqual([])
-    expect(classifierCalls(w)).toHaveLength(1)
+    expect(w.fetches).toEqual([])
+    expect(classifierCalls(w)).toEqual([])
   })
 })
 
