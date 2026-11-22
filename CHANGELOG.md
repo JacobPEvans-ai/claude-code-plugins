@@ -1,5 +1,17 @@
 # Changelog
 
+## [6.75.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.74.0...v6.75.0) (2026-11-22)
+
+
+### Features
+
+* **jpe-ai-delegation:** send each route event to the session telemetry collector ([#888](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/888)) ([fc9425c](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/fc9425ce8a7db1ff94efad7a63e098d6ec31f39b))
+
+
+### Bug Fixes
+
+* **guards:** judge-down rule, block messages that name the allowed form, two false positives ([#886](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/886)) ([937df4e](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/937df4ea13a6a4ef3e66fd39c717334b2ace249c))
+
 ## [6.74.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.73.5...v6.74.0) (2026-11-22)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.2.5](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/git-guards-v6.2.4...git-guards-v6.2.5) (2026-11-22)
+
+
+### Bug Fixes
+
+* **guards:** judge-down rule, block messages that name the allowed form, two false positives ([#886](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/886)) ([937df4e](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/937df4ea13a6a4ef3e66fd39c717334b2ace249c))
+
 ## [6.2.4](https://github.com/dryvist/claude-code-plugins/compare/git-guards-v6.2.3...git-guards-v6.2.4) (2026-09-25)
 
 

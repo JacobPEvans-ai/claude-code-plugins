@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.30.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.29.0...jpe-ai-delegation-v1.30.0) (2026-11-22)
+
+
+### Features
+
+* **jpe-ai-delegation:** send each route event to the session telemetry collector ([#888](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/888)) ([fc9425c](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/fc9425ce8a7db1ff94efad7a63e098d6ec31f39b))
+
 ## [1.29.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.28.9...jpe-ai-delegation-v1.29.0) (2026-11-22)
 
 
