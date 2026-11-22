@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.77.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.76.1...v6.77.0) (2026-11-22)
+
+
+### Features
+
+* **ai-cli-harness-better-practices:** add the work-management skill ([#903](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/903)) ([64834c5](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/64834c5b7ddc7870120e809ac6fe781ba25102f5))
+
 ## [6.76.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.76.0...v6.76.1) (2026-11-22)
 
 
