@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.76.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.76.0...v6.76.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** the ladder skill points at the routing statement ([#895](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/895)) ([d005224](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/d005224fbcbdd7f7588638c3d1a5cd276929d0a7))
+
 ## [6.76.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.75.1...v6.76.0) (2026-11-22)
 
 
