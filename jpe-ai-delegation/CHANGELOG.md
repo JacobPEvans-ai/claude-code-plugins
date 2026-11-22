@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.29.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.28.9...jpe-ai-delegation-v1.29.0) (2026-11-22)
+
+
+### Features
+
+* **ai-delegation:** event monitors replace the timed idle sweep ([#884](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/884)) ([b658e79](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/b658e79742fc427a1e4f687bf3696ac49b393234))
+* **jpe-ai-delegation:** read-only terminal rung and a subagent window guard ([#885](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/885)) ([145d0bc](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/145d0bce56411bb8965073ab9e821fc6de1b1c46))
+
 ## [1.28.9](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.28.8...jpe-ai-delegation-v1.28.9) (2026-11-22)
 
 
