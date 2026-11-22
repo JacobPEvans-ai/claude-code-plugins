@@ -16,7 +16,7 @@ Codex weekly).
 2. A public sandbox (Qwen first, then ZCode) or Codex:
    - Qwen (`zcode-job --tool opencode-qwen`), then ZCode (`zcode-job`): obvious, definitely non-sensitive work in public repos. Coding and coding-adjacent only:
      code, tests, GitHub automation and workflows, code reviews. Open-internet research needs a separate untrusted, internet-open container.
-     The output is a ready PR labelled `human:review`. Leak-scan it before merge. Never auto-merge it.
+     The output is a ready PR. Leak-scan it before merge. Never auto-merge it.
    - Codex: anything even remotely sensitive, or any private repo. Codex runs
      Luna at `xhigh` (AGENTS.md, 'Delegation routing' in the shared instructions
      repository). Codex qualifies while `codex-quota` exits 0 (more than 5% left).
@@ -125,7 +125,7 @@ For sandbox coding, put `[task: code] [repo: owner/repository]` in the
 description. A public-repo tag alone does not establish that work is coding.
 The sandbox takes public repositories only; a private repository stays with
 Codex. The hook verifies the returned PR belongs to the requested
-repository, is open and non-draft, and has `human:review`. When a job returns
+repository and is open and non-draft. When a job returns
 no verified PR, the hook reads `zcode-job status <job>` and acts on its `end`
 field. If the job ended without a PR, the task moves to the next eligible
 executor; `fell_through_from` names the sandbox and `skipped` gives `failed`.
