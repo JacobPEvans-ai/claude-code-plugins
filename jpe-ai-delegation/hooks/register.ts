@@ -1264,12 +1264,11 @@ ${PROMPT_POLICY}`, scope: 'session' }] }
     }
   })
 
-  // Claude models are banned for delegated work by operator order. Every Agent-tool spawn and every teammate spawn is
-  // denied here, where the engine decides the spawn's model; forks inherit by design and keep today's behavior.
-  // Workflow agents and resumed runs are denied whenever they carry a tool_use_id, and pass only when they carry none.
+  // Claude models are banned for delegated work by operator order. Every Agent-tool spawn, fork, workflow agent and
+  // teammate spawn is denied here, where the engine decides the spawn's model. Only an engine spawn that no tool call,
+  // fork, workflow or team starts passes.
   on('agent.spawn', ($, e, next) => {
-    if (e.fork) return next(e)
-    if (e.tool_use_id || e.isTeammate) return { deny: CLAUDE_SUBAGENT_DENY }
+    if (e.tool_use_id || e.fork || e.workflow || e.isTeammate) return { deny: CLAUDE_SUBAGENT_DENY }
     return next(e)
   }).catch(() => ({ deny: CLAUDE_SUBAGENT_DENY }))
 

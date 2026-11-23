@@ -1230,25 +1230,19 @@ describe('agent.spawn denial', () => {
       expect(w.nextCalls).toEqual([])
     })
   }
-  test('a fork keeps today’s behavior', async () => {
+  for (const [name, extra] of [['a fork', { fork: true, tool_use_id: '' }], ['a teammate', { isTeammate: true, tool_use_id: '' }], ['a workflow agent', { workflow: { runId: 'wf_1', agentIndex: 1 }, tool_use_id: '' }]] as const) {
+    test(`${name} is denied even without a tool call`, async () => {
+      const w = world()
+      expect(await w.invoke('agent.spawn', { ...spawn, ...extra })).toEqual({ deny: CLAUDE_SUBAGENT_DENY })
+      expect(w.nextCalls).toEqual([])
+    })
+  }
+  test('an engine spawn no tool call, fork, workflow or team starts keeps today’s behavior', async () => {
     const w = world()
-    const e = { ...spawn, fork: true }
+    const e = { ...spawn, tool_use_id: '' }
     await w.invoke('agent.spawn', e)
     expect(w.nextCalls).toEqual([e])
   })
-  test('a teammate is denied even without a tool call', async () => {
-    const w = world()
-    expect(await w.invoke('agent.spawn', { ...spawn, tool_use_id: '', isTeammate: true })).toEqual({ deny: CLAUDE_SUBAGENT_DENY })
-    expect(w.nextCalls).toEqual([])
-  })
-  for (const [name, extra] of [['a workflow agent', { workflow: { runId: 'wf_1', agentIndex: 1 }, tool_use_id: '' }], ['a spawn no tool call starts', { tool_use_id: '' }]] as const) {
-    test(`${name} without a tool call keeps today’s behavior`, async () => {
-      const w = world()
-      const e = { ...spawn, ...extra }
-      await w.invoke('agent.spawn', e)
-      expect(w.nextCalls).toEqual([e])
-    })
-  }
   test('a failing next refuses the spawn', async () => {
     const w = world({ nextRejects: true })
     expect(await w.invoke('agent.spawn', spawn)).toEqual({ deny: CLAUDE_SUBAGENT_DENY })
