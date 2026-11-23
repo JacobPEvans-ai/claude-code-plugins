@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.78.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.77.0...v6.78.0) (2026-11-23)
+
+
+### Features
+
+* **jpe-ai-delegation:** refuse spawns that would run on a Claude model ([#909](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/909)) ([3714a94](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/3714a949f8abd6afc856b2439624966b66687953))
+
 ## [6.77.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.76.1...v6.77.0) (2026-11-22)
 
 

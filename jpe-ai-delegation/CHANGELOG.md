@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.32.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.31.1...jpe-ai-delegation-v1.32.0) (2026-11-23)
+
+
+### Features
+
+* **jpe-ai-delegation:** refuse spawns that would run on a Claude model ([#909](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/909)) ([3714a94](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/3714a949f8abd6afc856b2439624966b66687953))
+
 ## [1.31.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.31.0...jpe-ai-delegation-v1.31.1) (2026-11-22)
 
 
