@@ -14,9 +14,9 @@ This plugin is specific to the maintainer's own setup and is not intended for ge
 - **Codex eligibility** - When the metrics feed has no fresh Codex row, the hook reads the native `codex-quota`
   command instead (cached for four hours, failures for ten minutes) and skips Codex unless it exits 0 below the
   80-percent used threshold
-- **Haiku last rung** - Every Agent tool spawn that reaches the engine, including a native custom agent and the
-  terminal rung after every executor fails, runs on Haiku; an `agent.spawn` hook sets the model, because the Agent tool
-  has no model parameter
+- **No Claude rung** - No spawn runs on a Claude model: native custom agents take the executor ladder, and when no
+  non-Claude executor answers the spawn is refused with `no non-Claude executor answered; nothing ran`; an
+  `agent.spawn` hook denies tool-started and teammate subagent spawns
 - **Sandbox executors** - Qwen (`opencode-qwen`) ranks first for public coding, ahead of ZCode, OpenCode Go and Cursor
 - **Route telemetry** - Route events also go to the session's telemetry collector when one is configured
 

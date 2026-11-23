@@ -20,9 +20,9 @@ it reports the first eligible executor from this fixed table.
 
 | Kind | Ladder | Sandbox eligibility | Use |
 | --- | --- | --- | --- |
-| `code` | Qwen sandbox -> zcode-job sandbox -> Codex -> Z.ai GLM -> OpenCode Go -> Haiku xhigh | Public coding tasks | Implementation |
-| `private` | Codex -> Haiku xhigh | Ineligible | Private tasks |
-| `other` | Codex -> Z.ai GLM -> OpenCode Go -> Haiku xhigh | Ineligible | Reads, triage, summaries, review and planning |
+| `code` | Qwen sandbox -> zcode-job sandbox -> Codex -> Z.ai GLM -> OpenCode Go | Public coding tasks | Implementation |
+| `private` | Codex | Ineligible | Private tasks |
+| `other` | Codex -> Z.ai GLM -> OpenCode Go | Ineligible | Reads, triage, summaries, review and planning |
 
 ## Dispatch and completion
 
@@ -46,7 +46,7 @@ installed-plugin registry. Missing definitions stop dispatch.
 The hook places each task in this order and logs one JSON `route` line per
 decision to `~/.claude/ai-delegation.log`:
 
-1. Eligibility. On-host local aliases, Codex and Haiku may see any task. Qwen
+1. Eligibility. On-host local aliases and Codex may see any task. Qwen
    (`zcode-job --tool opencode-qwen`), ZCode,
    OpenCode Go (`zcode-job --tool opencode`) and Cursor
    (`zcode-job --tool cursor-agent`) see only non-sensitive `[task: code]` work
@@ -106,9 +106,11 @@ decision to `~/.claude/ai-delegation.log`:
    `skipped` rows with a reason: `ineligible`, `exhausted`, `expired`,
    `not_installed`, `failed`, `recent_failures`, `budget_unknown` or
    `budget_spent`.
-4. Haiku `xhigh` ends every list. A Codex failure, an empty answer or an
-   unknown quota moves to the next executor; only forbidden models, prohibited
-   payloads and a sandbox job that may still open a PR stop routing.
+4. An executor failure, an empty answer or an unknown quota moves to the next
+   executor; when no executor answers, the spawn is refused with `no non-Claude
+   executor answered; nothing ran` and the route line records `stopped`. Only
+   forbidden models, prohibited payloads and a sandbox job that may still open
+   a PR stop routing earlier.
 
 For sandbox coding, put `[task: code] [repo: owner/repository]` in the
 description. A public-repo tag alone does not establish that work is coding.

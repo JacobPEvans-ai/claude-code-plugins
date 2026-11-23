@@ -31,14 +31,18 @@ assert_route() {
 }
 
 @test "private work never selects zcode or the public-only gateways" {
-  assert_route 'Haiku xhigh' exhausted private AGENT_ROUTE_ZCODE_AVAILABLE=yes AGENT_ROUTE_GLM_MODEL=glm AGENT_ROUTE_OPENCODE_GO_MODEL=go LITELLM_LOCAL_BASE_URL=http://localhost
+  run env AGENT_ROUTE_CODEX_QUOTA=exhausted AGENT_ROUTE_ZCODE_AVAILABLE=yes AGENT_ROUTE_GLM_MODEL=glm AGENT_ROUTE_OPENCODE_GO_MODEL=go LITELLM_LOCAL_BASE_URL=http://localhost agent-route private
+  [ "$status" -eq 1 ]
+  [ "$output" = 'agent-route: no eligible executor' ]
   run jq -e '.kinds.private.rungs | any(.gate == "sandbox" or .gate == "glm" or .gate == "opencode-go")' "$REPO_ROOT/jpe-ai-delegation/skills/delegation-ladder/ladder.json"
   [ "$status" -eq 1 ]
 }
 
 @test "read-only and other work never selects zcode" {
   assert_route Codex available other AGENT_ROUTE_ZCODE_AVAILABLE=yes
-  assert_route 'Haiku xhigh' exhausted other AGENT_ROUTE_ZCODE_AVAILABLE=yes
+  run env AGENT_ROUTE_CODEX_QUOTA=exhausted AGENT_ROUTE_ZCODE_AVAILABLE=yes agent-route other
+  [ "$status" -eq 1 ]
+  [ "$output" = 'agent-route: no eligible executor' ]
   run jq -e '[.kinds.other.rungs[].name] | any(test("sandbox"))' "$REPO_ROOT/jpe-ai-delegation/skills/delegation-ladder/ladder.json"
   [ "$status" -eq 1 ]
 }
@@ -50,10 +54,14 @@ assert_route() {
   done
 }
 
-@test "unconfigured gateways do not qualify, leaving Haiku xhigh last" {
+@test "unconfigured gateways do not qualify, leaving no eligible executor" {
   for kind in code private other; do
-    assert_route 'Haiku xhigh' exhausted "$kind"
-    assert_route 'Haiku xhigh' exhausted "$kind" AGENT_ROUTE_ZCODE_AVAILABLE=no AGENT_ROUTE_GLM_MODEL=glm AGENT_ROUTE_OPENCODE_GO_MODEL=go
+    run env AGENT_ROUTE_CODEX_QUOTA=exhausted agent-route "$kind"
+    [ "$status" -eq 1 ]
+    [ "$output" = 'agent-route: no eligible executor' ]
+    run env AGENT_ROUTE_CODEX_QUOTA=exhausted AGENT_ROUTE_ZCODE_AVAILABLE=no AGENT_ROUTE_GLM_MODEL=glm AGENT_ROUTE_OPENCODE_GO_MODEL=go agent-route "$kind"
+    [ "$status" -eq 1 ]
+    [ "$output" = 'agent-route: no eligible executor' ]
   done
 }
 
