@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Claude Code plugins and hooks by JacobPEvans",
-    "version": "6.77.0"
+    "version": "6.78.0"
   },
   "plugins": [
     {
@@ -112,7 +112,7 @@
       "name": "jpe-ai-delegation",
       "source": "./jpe-ai-delegation",
       "description": "Specific to the maintainer's own setup and not intended for general use",
-      "version": "1.31.1",
+      "version": "1.32.0",
       "author": {
         "name": "JacobPEvans"
       }
