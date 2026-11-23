@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LAST_RESORT, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, harnessArgv, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, harnessArgv, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
 import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
@@ -60,7 +60,7 @@ const JOB_STATUS_TIMEOUT_MS = 15_000
 const JOB_LOG_BYTES = 131_072
 const LOG_TIMEOUT_MS = 5_000
 let routeTelemetryFailureLogged = false
-const PROMPT_POLICY = 'The jpe-ai-delegation hook places every Agent spawn. Tag self-contained text work [class: text] and put all of its text in the prompt; the hook sends it to an on-host local model first. An untagged spawn is classified by the hook itself, and an explicit tag always remains the override. Every other spawn, and any local answer that fails its check, goes to the subscription executors it is eligible for, ranked by usage pace. ZCode, OpenCode Go and Cursor take only non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository; their output is a ready PR; leak-scan it before merge; never auto-merge. Codex runs Luna at xhigh, the only Codex model and effort (AGENTS.md, \'Delegation routing\'). Tag work that needs network or GitHub writes [needs: network]; it runs on the in-session last rung, never an executor sandbox. Haiku xhigh is always last. Nothing stops because an executor is unavailable. Never Sonnet, Opus or Fable subagents. Never send secrets, credentials, inventory or incident content to any executor. Antigravity stays a second-opinion reviewer, never an executor.'
+const PROMPT_POLICY = 'The jpe-ai-delegation hook places every Agent spawn. Tag self-contained text work [class: text] and put all of its text in the prompt; the hook sends it to an on-host local model first. An untagged spawn is classified by the hook itself, and an explicit tag always remains the override. Every other spawn, and any local answer that fails its check, goes to the subscription executors it is eligible for, ranked by usage pace. ZCode, OpenCode Go and Cursor take only non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository; their output is a ready PR; leak-scan it before merge; never auto-merge. Codex runs Luna at xhigh, the only Codex model and effort (AGENTS.md, \'Delegation routing\'). Tag work that needs network or GitHub writes [needs: network]; it runs only on the harness executors, never an executor sandbox. There is no Claude rung: no Agent spawn ever runs on a Claude model, and a spawn no non-Claude executor answers is refused, not run in the session. Never Sonnet, Opus or Fable subagents. Never send secrets, credentials, inventory or incident content to any executor. Antigravity stays a second-opinion reviewer, never an executor.'
 
 // A quota read: the instant-query result, or why there is none.
 type QuotaFetch = { result?: unknown[]; failure?: 'quota_unconfigured' | 'quota_unreachable' }
@@ -551,6 +551,20 @@ function failure(e: AgentCall, reason: string): unknown {
   return routedResult(e, 'ai-delegation-policy', `FAIL | router | ${reason}`, '[routing stopped]', 0)
 }
 
+// Claude models are banned for delegated work, so no spawn falls back to the session: a ladder with no answer is
+// refused. The result text tells the lead what to do instead; the route line records why nothing ran.
+const NO_EXECUTOR = 'no non-Claude executor answered; nothing ran'
+const NO_EXECUTOR_REASON = 'no executor answered (Claude terminal rung removed)'
+const NO_EXECUTOR_AFTER_ERROR_REASON = 'no executor answered after error (Claude terminal rung removed)'
+const NETWORK_NO_EXECUTOR = 'network work: no non-Claude executor answered; run it in the lead session or through zcode-job/codex CLI'
+const NETWORK_NO_EXECUTOR_REASON = 'network work: no harness executor answered'
+const CLAUDE_SUBAGENT_DENY = 'Claude subagents are disabled by operator order; delegate through a non-Claude executor'
+
+async function refuse($: Engine, e: AgentCall, event: RouteEvent, text: string, reason: string): Promise<unknown> {
+  await logRoute($, event, 'stopped', reason)
+  return failure(e, text)
+}
+
 function repositoryTag(description: string | undefined, prompt?: string): string | undefined {
   const repo = taggedText(description, prompt).match(/\[repo: ([A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100})\]/)?.[1]
   const repository = repo?.split('/')[1]
@@ -923,7 +937,7 @@ type RouteGuards =
   | { allowed: true; call: AgentCall; definition?: AgentDefinition; customSandbox?: Sandbox }
   | { allowed: false; result: unknown }
 
-// Model, agent-definition and payload checks run before any executor or terminal dispatch, including after an error.
+// Model, agent-definition and payload checks run before any executor dispatch, including after an error.
 async function routeGuards($: Engine, e: AgentCall, event: RouteEvent): Promise<RouteGuards> {
   if (forbiddenModel(e.model) || forbiddenModel(e.subagent_type)) {
     return { allowed: false, result: await stopRoute($, e, event, 'Sonnet, Opus and Fable subagents are forbidden') }
@@ -938,8 +952,8 @@ async function routeGuards($: Engine, e: AgentCall, event: RouteEvent): Promise<
       return { allowed: false, result: await stopRoute($, e, event, 'custom agent model or tool restrictions could not be read') }
     }
     event.agent_type = agentType(e, definition !== undefined)
-    // No agent file: a built-in or plugin agent, which takes the native path below with its model pinned. A name
-    // that cannot be an agent type still stops.
+    // No agent file: a built-in or plugin agent takes the executor ladder like any other spawn. A name that cannot
+    // be an agent type still stops.
     if (!definition && !/^[\w:.-]{1,80}$/.test(call.subagent_type)) {
       return { allowed: false, result: await stopRoute($, e, event, 'custom agent definition could not be verified') }
     }
@@ -957,51 +971,15 @@ async function routeGuards($: Engine, e: AgentCall, event: RouteEvent): Promise<
   return { allowed: true, call, definition, customSandbox }
 }
 
-const TERMINAL_READ_ONLY_NOTE = 'The terminal rung ran read-only; for edits, spawn again with isolation: worktree.'
-
-function terminalCall(e: AgentCall): { call: AgentCall; readOnly: boolean } {
-  const readOnly = e.isolation !== 'worktree' && isGenericType(e)
-  const replaceType = readOnly && !['Explore', 'Plan'].includes(e.subagent_type ?? '')
-  return {
-    call: { ...e, ...(replaceType ? { subagent_type: 'Explore' } : {}), effort: LAST_RESORT.effort },
-    readOnly,
-  }
-}
-
-function appendTerminalNote(result: unknown): unknown {
-  if (!result || typeof result !== 'object') return result
-  const response = result as { result?: { content?: unknown[]; [key: string]: unknown }; [key: string]: unknown }
-  if (!response.result || typeof response.result !== 'object') return result
-  const content = Array.isArray(response.result.content) ? response.result.content : []
-  return {
-    ...response,
-    result: { ...response.result, content: [...content, { type: 'text', text: TERMINAL_READ_ONLY_NOTE }] },
-  }
-}
-
-async function routeCore(next: (e: never) => Promise<unknown>, value: AgentCall, readOnlyTerminal = false): Promise<unknown> {
-  try {
-    const result = await next(value as never)
-    return readOnlyTerminal ? appendTerminalNote(result) : result
-  } catch {
-    return failure(value, 'routing failed closed')
-  }
-}
-
-// A background spawn returns at once. The same route runs detached with the spawn in the foreground; the terminal rung
-// starts a last-rung agent through $.agent.spawn, which reports on its own, and the routed result arrives through
-// $.prompt.submit, queued until the session is idle.
+// A background spawn returns at once. The same route runs detached with the spawn in the foreground; its routed
+// result arrives through $.prompt.submit, queued until the session is idle. A route with no answer is refused the
+// same way a foreground one is: nothing starts on a Claude model.
 function startBackground($: Engine, call: AgentCall): unknown {
   const job = `bg-${++backgroundJobs}`
-  const terminal = async (value: AgentCall): Promise<unknown> => {
-    const spawned = await $.agent.spawn({ prompt: value.prompt, description: value.description ?? '', subagentType: value.subagent_type ?? 'general-purpose', model: LAST_RESORT.model })
-    const text = 'deny' in spawned ? `FAIL | router | the terminal rung was refused: ${spawned.deny}` : `The terminal rung started agent ${spawned.agentId}; its result arrives on its own.`
-    return routedResult(value, 'ai-delegation-background', text, `[routed: ${LAST_RESORT.model}]`, 0)
-  }
   void (async () => {
     let text: string
     try {
-      const out = await route($, { ...call, run_in_background: false }, terminal as never) as { result?: { content?: { text?: string }[] } }
+      const out = await route($, { ...call, run_in_background: false }) as { result?: { content?: { text?: string }[] } }
       text = out.result?.content?.[0]?.text ?? 'FAIL | router | the background route returned no result'
     } catch (err) {
       text = `FAIL | router | the background route failed: ${errText(err)}`
@@ -1013,23 +991,18 @@ function startBackground($: Engine, call: AgentCall): unknown {
   return routedResult(call, `ai-delegation-${job}`, `Started background job ${job}. Its result arrives later as a message from jpe-ai-delegation.`, `[routed: background ${job}]`, 0)
 }
 
-async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknown>): Promise<unknown> {
+async function route($: Engine, e: AgentCall): Promise<unknown> {
   const event = newEvent(e)
-  // The route line is already written when core runs, so a core failure returns FAIL without a second line.
+  // Every exit writes exactly one route line; the route never calls core, so a refusal is a result, not a throw.
   const original = e
   const guards = await routeGuards($, e, event)
   if (!guards.allowed) return guards.result
   e = guards.call
   const { definition, customSandbox } = guards
-  if (e.subagent_type && !isGenericType(e) && customSandbox === undefined) {
-    // The agent.spawn hook pins the model, so an inherited model never reaches the subagent.
-    await logRoute($, event, 'native custom agent', 'custom tool policy')
-    return routeCore(next, original)
-  }
-  // Network or GitHub-write work runs in the session: executor sandboxes deny egress and never hold credentials.
+  // Network or GitHub-write work: executor sandboxes deny egress and never hold credentials, so only the harness rows
+  // run it — the headless CLI on the host has network. No harness answer is a refusal, never a session fallback.
   if (networkTask(original.description, original.prompt) || definition?.egress === 'network') {
-    await logRoute($, event, LAST_RESORT.model, 'network work')
-    return routeCore(next, { ...original, effort: LAST_RESORT.effort })
+    return routeNetwork($, e, event, customSandbox)
   }
   if (original.run_in_background === true) {
     await logRoute($, event, 'background', 'run_in_background')
@@ -1064,7 +1037,7 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
     }
   }
 
-  // Subscription rungs: eligibility, then usage pace; Haiku always ends the list.
+  // Subscription rungs: eligibility, then usage pace. No Claude rung follows them: an unanswered spawn is refused.
   const restricted = definition && (definition.tools !== undefined || Boolean(definition.disallowedTools?.length))
   const repo = restricted ? undefined : await publicCodeRepo($, e, event.kind.value === 'code')
   const table = await loadExecutorTable($)
@@ -1083,7 +1056,7 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
   Object.assign(skipped, ranked.skipped)
   // A codex row the native read could not decide is not a candidate, whatever its feed telemetry says.
   for (const [id, why] of Object.entries(quota.nativeSkips)) skipped[id] = why
-  event.eligible = [...rows.map((r) => r.id), LAST_RESORT.model]
+  event.eligible = rows.map((r) => r.id)
   event.skipped = skipped
   for (const r of rows) {
     const s = scores[r.id]
@@ -1169,10 +1142,46 @@ async function route($: Engine, e: AgentCall, next: (e: never) => Promise<unknow
     }
     event.fell_through_from.push(executor)
   }
-  // No executor took the task: the terminal rung runs in core at LAST_RESORT.effort; the agent.spawn hook sets its model.
-  const terminal = terminalCall(original)
-  await logRoute($, event, LAST_RESORT.model, terminal.readOnly ? 'terminal rung ran read-only' : 'terminal rung')
-  return routeCore(next, terminal.call, terminal.readOnly)
+  // No executor took the task and no Claude rung remains: refuse instead of handing the spawn to the session.
+  return refuse($, e, event, NO_EXECUTOR, NO_EXECUTOR_REASON)
+}
+
+// Network work runs only on the harness rows, in table order, under the same sandbox and cooldown rules as the main
+// ladder. Every other transport is ineligible: sandboxes deny egress and Codex holds no GitHub credentials.
+async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent, customSandbox: Sandbox | undefined): Promise<unknown> {
+  const base = (await $.env.get('LITELLM_LOCAL_BASE_URL'))?.replace(/\/+$/, '')
+  const table = await loadExecutorTable($)
+  const now = (await clockNow($)) ?? Number.POSITIVE_INFINITY
+  const quota = await currentQuota($, table)
+  const harnessRows = table.filter((r) => r.transport === 'harness')
+  const { rows, skipped } = eligibleRows(harnessRows, false, now, quota.budgets)
+  event.eligible = rows.map((r) => r.id)
+  event.skipped = skipped
+  event.quota_unknown = quota.unknown
+  event.quota_source = quota.sources
+  let labelPromise: Promise<Label> | undefined
+  const rungLabel = (): Promise<Label> => (labelPromise ??= classify($, e))
+  let harnessDown = false
+  for (const row of rows) {
+    if (!base) { skipped[row.id] = 'not_installed'; continue }
+    if (harnessDown) { skipped[row.id] = 'failed'; continue }
+    const attemptNow = await clockNow($)
+    if (attemptNow !== null && recentAttemptFailures(attemptHistory(await decisionLogLines($), attemptNow), row.id, attemptNow)) {
+      skipped[row.id] = 'recent_failures'
+      continue
+    }
+    const startedAt = await clockNow($)
+    const result = await runHarnessRung($, e, row, customSandbox, rungLabel)
+    if (result) {
+      await logRoute($, event, row.id, 'network work')
+      return result
+    }
+    skipped[row.id] = 'failed'
+    const ended = await clockNow($)
+    if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
+    event.fell_through_from.push(row.id)
+  }
+  return refuse($, e, event, NETWORK_NO_EXECUTOR, NETWORK_NO_EXECUTOR_REASON)
 }
 
 // One judge ask on the on-host medium alias, the same endpoint classifyKind uses: a parsed verdict, or why there is
@@ -1241,29 +1250,27 @@ export const register: Register = (on) => {
 ${PROMPT_POLICY}`, scope: 'session' }] }
   }).catch(($, e, next) => next(e))
 
-  // An unexpected router failure must not bypass the model and payload guards.
-  on('tool.call', { tool: 'Agent' }, ($, e, next) => route($, e as never, next as never) as never).catch(async ($, e, next) => {
+  // An unexpected router failure must not bypass the model and payload guards, and never falls back to the session.
+  on('tool.call', { tool: 'Agent' }, ($, e) => route($, e as never) as never).catch(async ($, e) => {
     const original = e as AgentCall
-    // A guard that cannot be evaluated stops the spawn: the terminal rung runs only after the guards pass.
+    // A guard that cannot be evaluated stops the spawn: a refusal is the only exit after the guards pass.
     try {
       const event = newEvent(original)
       const guards = await routeGuards($, original, event)
       if (!guards.allowed) return guards.result
-      const terminal = terminalCall(original)
-      await logRoute($, event, LAST_RESORT.model, terminal.readOnly ? 'terminal rung ran read-only after error' : 'terminal rung after error')
-      return routeCore(next as never, terminal.call, terminal.readOnly)
+      return refuse($, original, event, NO_EXECUTOR, NO_EXECUTOR_AFTER_ERROR_REASON)
     } catch {
       return failure(original, 'routing failed closed')
     }
   })
 
-  // Every Agent tool spawn that reaches core runs on LAST_RESORT.model. The Agent tool has no model parameter, so the
-  // pin is set here, where the engine decides the spawn's model. Forks inherit by design; workflow agents, teammates
-  // and resumed runs keep the model their own start chose.
+  // Claude models are banned for delegated work by operator order. Every Agent-tool spawn, fork, workflow agent and
+  // teammate spawn is denied here, where the engine decides the spawn's model. Only an engine spawn that no tool call,
+  // fork, workflow or team starts passes.
   on('agent.spawn', ($, e, next) => {
-    if (!e.tool_use_id || e.fork || e.workflow || e.isTeammate || e.resume || e.model === LAST_RESORT.model) return next(e)
-    return next({ ...e, model: LAST_RESORT.model })
-  }).catch(() => ({ deny: 'subagent model pin failed closed' }))
+    if (e.tool_use_id || e.fork || e.workflow || e.isTeammate) return { deny: CLAUDE_SUBAGENT_DENY }
+    return next(e)
+  }).catch(() => ({ deny: CLAUDE_SUBAGENT_DENY }))
 
   // Subagents cannot open the privileged credential window; every other call keeps the permission judge behavior.
   on('tool.check', { tool: 'Bash' }, ($, e, next) => {

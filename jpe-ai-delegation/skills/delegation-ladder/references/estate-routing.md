@@ -24,12 +24,12 @@ custom-agent definitions. Worktree isolation creates a separate checkout for Cod
 than selecting a later executor. Custom-agent instructions are loaded before
 classification; unresolved definitions fail closed.
 
-The permission judge follows AGENTS.md, 'Delegation routing' in the shared
-instructions repository while quota is available, then configured GLM,
-OpenCode Go and Haiku `xhigh` only while exhausted; unknown quota leaves the
-core dialog. No verdict leaves the core dialog open. Prohibited
-inline content is screened locally before any classifier, judge or executor
-receives it; the lead classifies all remaining context before dispatch.
+The permission judge answers the bypass-immune shell ask on the on-host
+`medium` alias through `LITELLM_LOCAL_BASE_URL`, never spending the Codex
+subscription. Any failure or unparsed verdict leaves the core dialog open for
+the person; a failure never allows. Prohibited inline content is screened
+locally before any classifier, judge or executor receives it; the lead
+classifies all remaining context before dispatch.
 
 ## Executor contract
 

@@ -24,8 +24,9 @@ export const CODEX: Record<Label, Route> = {
 // Plan and deep judgment is advice: it never writes.
 export const isAdvisory = (label: Label): boolean => label === 'plan' || label === 'deep'
 
-// Claude is the last resort only: Haiku, never Sonnet, Opus or Fable.
-export const LAST_RESORT = { model: 'haiku', effort: 'xhigh' } as const
+// Claude models are banned for delegated work by operator order. There is no Claude rung: a spawn no non-Claude
+// executor answers is refused, and no executor row may name a Claude model.
+export const CLAUDE_MODEL_NAMES = ['haiku', 'sonnet', 'opus', 'fable'] as const
 
 export const CLASSIFIER = `Classify the delegated task into one word. Default to standard unless there is an explicit reason for another.
 bulk: bulk work, reads and triage.
@@ -73,9 +74,9 @@ export const mandatoryLabel = (text: string): Label | undefined => /\b(auth(?:en
 // mandatoryLabel.
 export const credentialBrief = (text: string): boolean => /\b(auth(?:entication|orization)?|secrets?|credentials?|tokens?|passwords?|keys?)\b/i.test(text)
 export const forbiddenModel = (model: string | undefined): boolean => /(?:^|[-/\s])(sonnet|opus|fable)(?:$|[-/\s\d])/i.test(model ?? '')
-// Stricter, for an executor row's model only: any spelling that contains sonnet, opus or fable once case and every
+// Stricter, for an executor row's model only: any spelling that contains a Claude model name once case and every
 // non-alphanumeric are removed. Over-blocking an odd router name is the safe direction; agent type names keep forbiddenModel.
-export const forbiddenRowModel = (model: string | undefined): boolean => /sonnet|opus|fable/.test((model ?? '').toLowerCase().replace(/[^a-z0-9]/g, ''))
+export const forbiddenRowModel = (model: string | undefined): boolean => /sonnet|opus|fable|haiku|claude/.test((model ?? '').toLowerCase().replace(/[^a-z0-9]/g, ''))
 
 export const LOCAL_DEFAULT_ROLE = 'local-default'
 // A key assignment whose value cannot carry a credential: a workflow permission level, an environment variable
@@ -193,7 +194,7 @@ export function harnessArgv(sandbox: Sandbox, tree?: string): string[] {
   return [...argv, '--tools', 'Bash,Read,Edit,Write,Grep,Glob', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true } })]
 }
 
-// Subscription executors as data, in static order; Haiku is the terminal rung outside this table. Rows may be
+// Subscription executors as data, in static order; no Claude rung sits outside this table. Rows may be
 // overridden or added by id from an operator file; `mergeExecutorRows` validates every row.
 export type Executor = string
 export type Peak = { days: number[]; start_utc: number; end_utc: number; multiplier: number }
@@ -241,7 +242,7 @@ const isPeak = (p: unknown): p is Peak => {
 // subscription-trusted row may take private work.
 export function validRow(r: unknown): ExecutorRow | undefined {
   const v = r as ExecutorRow
-  if (!v || typeof v.id !== 'string' || !/^[a-z0-9-]{1,40}$/.test(v.id) || v.id === LAST_RESORT.model) return undefined
+  if (!v || typeof v.id !== 'string' || !/^[a-z0-9-]{1,40}$/.test(v.id) || (CLAUDE_MODEL_NAMES as readonly string[]).includes(v.id)) return undefined
   if (v.transport !== 'codex' && v.transport !== 'sandbox' && v.transport !== 'router-chat' && v.transport !== 'harness') return undefined
   if (v.transport === 'sandbox' && (typeof v.tool !== 'string' || !/^[a-z0-9-]{1,40}$/.test(v.tool))) return undefined
   if (v.transport === 'router-chat' && (typeof v.model !== 'string' || !/^[A-Za-z0-9._:/-]{1,80}$/.test(v.model))) return undefined

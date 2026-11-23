@@ -22,10 +22,6 @@
         {
           "name": "OpenCode Go",
           "gate": "opencode-go"
-        },
-        {
-          "name": "Haiku xhigh",
-          "gate": "always"
         }
       ]
     },
@@ -35,10 +31,6 @@
         {
           "name": "Codex",
           "gate": "codex"
-        },
-        {
-          "name": "Haiku xhigh",
-          "gate": "always"
         }
       ]
     },
@@ -56,10 +48,6 @@
         {
           "name": "OpenCode Go",
           "gate": "opencode-go"
-        },
-        {
-          "name": "Haiku xhigh",
-          "gate": "always"
         }
       ]
     }
