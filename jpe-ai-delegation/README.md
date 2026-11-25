@@ -17,6 +17,8 @@ This plugin is specific to the maintainer's own setup and is not intended for ge
 - **No Claude rung** - No spawn runs on a Claude model: native custom agents take the executor ladder, and when no
   non-Claude executor answers the spawn is refused with `no non-Claude executor answered; nothing ran`; an
   `agent.spawn` hook denies tool-started and teammate subagent spawns
+- **Retired agent types** - Retired types are refused with a command naming their replacement; `youtrack-specialist`
+  uses `ask-agent youtrack-clerk "<request>"`
 - **Sandbox executors** - Qwen (`opencode-qwen`) ranks first for public coding, ahead of ZCode, OpenCode Go and Cursor
 - **Route telemetry** - Route events also go to the session's telemetry collector when one is configured
 

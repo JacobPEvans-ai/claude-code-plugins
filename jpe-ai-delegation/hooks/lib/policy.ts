@@ -153,6 +153,16 @@ export const subagentRunsDeniedCommand = (command: string): boolean => {
 type Spawn = { subagent_type?: string }
 export const isGenericType = (e: Spawn): boolean => e.subagent_type === undefined || ['general-purpose', 'executor', 'Explore', 'Plan'].includes(e.subagent_type)
 
+// Agent types that moved to a standing service. The value is the command that replaces a spawn.
+export const RETIRED_AGENT_TYPES: Readonly<Record<string, string>> = {
+  'youtrack-specialist': 'ask-agent youtrack-clerk "<request>"',
+}
+export const retiredAgentHint = (type: string | undefined): string | undefined => {
+  if (type === undefined) return undefined
+  const name = type.slice(type.lastIndexOf(':') + 1)
+  return Object.prototype.hasOwnProperty.call(RETIRED_AGENT_TYPES, name) ? RETIRED_AGENT_TYPES[name] : undefined
+}
+
 // Preferred listed model of a family in Codex's own model cache. The cache ranks models by `priority`
 // (lowest is newest), so no version is parsed or written here and a new release is picked up with no change.
 export function newestModel(cacheText: string, family: string): string | undefined {

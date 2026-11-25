@@ -805,6 +805,34 @@ describe('model and payload guards', () => {
     expect(text(await unreadable.agent(call))).toStartWith('FAIL | router |')
     expect(unreadable.nextCalls).toEqual([])
   })
+  test('retired agent types are refused before definition lookup and executor calls', async () => {
+    const hint = 'ask-agent youtrack-clerk "<request>"'
+    for (const [subagent_type, run_in_background] of [
+      ['youtrack-specialist', true],
+      ['plugin:youtrack-specialist', false],
+    ] as const) {
+      const w = world({ definition: '---\nmodel: haiku\n---\nPerform the task.' })
+      const result = text(await w.agent({ subagent_type, run_in_background }))
+      expect(result).toStartWith(`FAIL | router | agent type ${subagent_type} is retired; run: ${hint}`)
+      expect(result).toContain('is retired')
+      expect(result).toContain(hint)
+      expect(work(w)).toEqual([])
+      expect(w.fetches).toEqual([])
+      expect(w.modelCalls).toEqual([])
+      expect(w.agentSpawns).toEqual([])
+      expect(w.nextCalls).toEqual([])
+      expect(w.submitted).toEqual([])
+      expect(w.fsReads.every((path) => !path.includes('youtrack-specialist'))).toBe(true)
+    }
+  })
+  test('another named agent type and a generic type still follow the executor ladder', async () => {
+    for (const subagent_type of ['reviewer', 'general-purpose']) {
+      const w = world()
+      expect(text(await w.agent({ subagent_type }))).toContain('codex luna xhigh')
+      expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex' })
+      expect(w.nextCalls).toEqual([])
+    }
+  })
   for (const [name, subagentType] of [['built-in', 'claude-code-guide'], ['plugin', 'codex:codex-rescue']] as const) {
     test(`missing ${name} agent definition takes the executor ladder and its spawn is denied`, async () => {
       const w = world()
@@ -2679,6 +2707,7 @@ describe('route telemetry', () => {
     ['forbidden custom agent model', { definition: '---\nmodel: opus\n---\nReview.' }, { subagent_type: 'reviewer' }, 'stopped', 'Sonnet, Opus and Fable subagents are forbidden'],
     ['unreadable custom agent', { fsThrows: true }, { subagent_type: 'reviewer' }, 'stopped', 'custom agent model or tool restrictions could not be read'],
     ['missing custom agent definition', {}, { subagent_type: 'reviewer' }, 'codex', 'highest-ranked eligible executor that answered'],
+    ['retired agent type', { definition: tracker }, { subagent_type: 'youtrack-specialist' }, 'stopped', 'agent type youtrack-specialist is retired; run: ask-agent youtrack-clerk "<request>"'],
     ['prohibited payload', {}, { prompt: 'Use token=abc123 here.' }, 'stopped', 'payload contains prohibited content'],
     ['native custom agent without a model', { definition: tracker.replace('model: haiku', 'model: inherit') }, { subagent_type: 'reviewer' }, 'codex', 'highest-ranked eligible executor that answered'],
     ['native custom agent', { definition: tracker }, { subagent_type: 'reviewer' }, 'codex', 'highest-ranked eligible executor that answered'],
