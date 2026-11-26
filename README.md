@@ -26,8 +26,8 @@ Generic delegation guidance, model review, and autonomous maintenance workflows.
 This plugin is specific to the maintainer's own setup and is not intended for general use.
 
 - **Type**: Skill-based plugin
-- **Skills**: `/delegation-ladder`
-- **Purpose**: Apply the maintainer-specific executor ladder, eligibility rules, and verification steps
+- **Skills**: `/delegation-ladder`, `/semaphore-converge`
+- **Purpose**: Apply the maintainer-specific executor ladder, eligibility rules, and verification steps, and the Semaphore converge-agent caller contract
 
 ### codeql-resolver
 
