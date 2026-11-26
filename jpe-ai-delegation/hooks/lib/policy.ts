@@ -3,6 +3,8 @@
 export type Label = 'bulk' | 'bulk-complex' | 'standard' | 'complex' | 'plan' | 'deep'
 export type Verdict = { verdict: 'safe' | 'unsafe'; reason: string }
 export type Sandbox = 'read-only' | 'workspace-write'
+export type HarnessMcpServer = { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+export type HarnessMcpConfig = { mcpServers: Record<string, HarnessMcpServer>; allowedTools: string[] }
 export type Family = 'luna'
 export type Route = { family: Family; effort: string }
 
@@ -77,6 +79,11 @@ export const forbiddenModel = (model: string | undefined): boolean => /(?:^|[-/\
 // Stricter, for an executor row's model only: any spelling that contains a Claude model name once case and every
 // non-alphanumeric are removed. Over-blocking an odd router name is the safe direction; agent type names keep forbiddenModel.
 export const forbiddenRowModel = (model: string | undefined): boolean => /sonnet|opus|fable|haiku|claude/.test((model ?? '').toLowerCase().replace(/[^a-z0-9]/g, ''))
+// A harness alias must never address a Claude or Anthropic model, including provider-qualified and case-varied names.
+export const forbiddenHarnessModel = (model: string | undefined): boolean => {
+  const name = (model ?? '').toLowerCase()
+  return ['claude', 'anthropic', ...CLAUDE_MODEL_NAMES].some((marker) => name.includes(marker))
+}
 
 export const LOCAL_DEFAULT_ROLE = 'local-default'
 // A key assignment whose value cannot carry a credential: a workflow permission level, an environment variable
@@ -222,9 +229,11 @@ export type Peak = { days: number[]; start_utc: number; end_utc: number; multipl
 // documents the key's own daily cap; the hook does not compare it.
 export type ExecutorRow = {
   id: Executor
-  transport: 'codex' | 'sandbox' | 'router-chat'
+  transport: 'codex' | 'sandbox' | 'router-chat' | 'harness'
   tool?: string
   model?: string
+  // Harness rows only: context size assumed by the headless child.
+  window?: number
   billing?: 'paid'
   budget_daily_usd?: number
   budget_key?: string
@@ -236,8 +245,10 @@ export type ExecutorRow = {
   kind?: 'promotion'
   expires?: string
 }
-// Codex is subscription-trusted and may take private work: its runs execute on the operator's own host.
+// The headless CLI can only reach non-Claude aliases at the local router. These rows lead the ladder and may take private work.
 export const EXECUTOR_TABLE: readonly ExecutorRow[] = [
+  { id: 'homelab-harness', transport: 'harness', model: 'medium-homelab', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 },
+  { id: 'host-harness', transport: 'harness', model: 'medium', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 },
   { id: 'qwen', transport: 'sandbox', tool: 'opencode-qwen', trust: 'sandbox-public', private_ok: false, price: 0.5 },
   { id: 'zcode', transport: 'sandbox', tool: 'zcode', trust: 'sandbox-public', private_ok: false, price: 1, peak: [{ days: [1, 2, 3, 4, 5], start_utc: 6, end_utc: 10, multiplier: 2 }] },
   { id: 'opencode-go', transport: 'sandbox', tool: 'opencode', trust: 'sandbox-public', private_ok: false, price: 1 },
@@ -255,9 +266,12 @@ const isPeak = (p: unknown): p is Peak => {
 export function validRow(r: unknown): ExecutorRow | undefined {
   const v = r as ExecutorRow
   if (!v || typeof v.id !== 'string' || !/^[a-z0-9-]{1,40}$/.test(v.id) || (CLAUDE_MODEL_NAMES as readonly string[]).includes(v.id)) return undefined
-  if (v.transport !== 'codex' && v.transport !== 'sandbox' && v.transport !== 'router-chat') return undefined
+  if (v.transport !== 'codex' && v.transport !== 'sandbox' && v.transport !== 'router-chat' && v.transport !== 'harness') return undefined
   if (v.transport === 'sandbox' && (typeof v.tool !== 'string' || !/^[a-z0-9-]{1,40}$/.test(v.tool))) return undefined
   if (v.transport === 'router-chat' && (typeof v.model !== 'string' || !/^[A-Za-z0-9._:/-]{1,80}$/.test(v.model))) return undefined
+  if (v.transport === 'harness' && (typeof v.model !== 'string' || !/^[a-z0-9-]{1,40}$/i.test(v.model) || forbiddenHarnessModel(v.model) ||
+    typeof v.window !== 'number' || !Number.isInteger(v.window) || v.window < 16000 || v.window > 2000000 ||
+    v.trust !== 'subscription-trusted' || v.private_ok !== true)) return undefined
   if (forbiddenRowModel(v.model)) return undefined
   if (v.billing !== undefined && v.billing !== 'paid') return undefined
   if (v.billing === 'paid' && (v.transport !== 'router-chat' || typeof v.budget_daily_usd !== 'number' ||
@@ -277,6 +291,86 @@ export function validRow(r: unknown): ExecutorRow | undefined {
   if (v.kind === 'promotion' && (typeof v.expires !== 'string' || Number.isNaN(Date.parse(v.expires)))) return undefined
   return v
 }
+
+// The only way to build a headless CLI command. Its tool set excludes Agent and Task so the child cannot delegate.
+export function harnessArgv(sandbox: Sandbox, tree?: string, mcp?: HarnessMcpConfig): string[] {
+  if (sandbox !== 'read-only' && sandbox !== 'workspace-write') throw new Error(`harness sandbox must be read-only or workspace-write, got ${sandbox}`)
+  const argv = ['claude', '-p', '--max-turns', '100', '--bare', '--exclude-dynamic-system-prompt-sections', '--no-session-persistence', '--output-format', 'json', '--permission-mode', sandbox === 'read-only' ? 'dontAsk' : 'acceptEdits']
+  if (sandbox === 'read-only') {
+    if (!tree?.startsWith('/')) throw new Error('a read-only harness needs the absolute directory it runs in')
+    argv.push('--tools', 'Bash,Read', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true, filesystem: { denyWrite: [tree] } } }))
+  } else {
+    argv.push('--tools', 'Bash,Read,Edit,Write,Grep,Glob', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true } }))
+  }
+  if (mcp) argv.push('--mcp-config', JSON.stringify({ mcpServers: mcp.mcpServers }), '--strict-mcp-config', '--allowedTools', mcp.allowedTools.join(','))
+  return argv
+}
+
+const HARNESS_MODEL_ENV = [
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
+] as const
+
+// Construct every model/auth setting for the child in one pure function. The endpoint comes only from the on-host
+// router setting and Anthropic hosts are rejected before the CLI starts.
+export function harnessEnv(row: Pick<ExecutorRow, 'transport' | 'model' | 'window'>, base: string | undefined, path = ''): Record<string, string> {
+  if (row.transport !== 'harness' || typeof row.model !== 'string' || forbiddenHarnessModel(row.model)) {
+    throw new Error('harness model must be a non-Claude router alias')
+  }
+  if (typeof row.window !== 'number' || !Number.isInteger(row.window) || row.window < 16000 || row.window > 2000000) {
+    throw new Error('harness context window is invalid')
+  }
+  if (!base?.trim()) throw new Error('router URL unset')
+  let endpoint: URL
+  try { endpoint = new URL(base) } catch { throw new Error('router URL is invalid') }
+  const host = endpoint.hostname.toLowerCase().replace(/\.$/, '')
+  if (!['http:', 'https:'].includes(endpoint.protocol) || !host || host === 'anthropic.com' || host === 'api.anthropic.com' || host.endsWith('.anthropic.com')) {
+    throw new Error('router URL must not point to an Anthropic host')
+  }
+  const env: Record<string, string> = {
+    ANTHROPIC_BASE_URL: base.replace(/\/+$/, ''),
+    ANTHROPIC_AUTH_TOKEN: 'local-proxy',
+    ANTHROPIC_API_KEY: '',
+    CLAUDE_CODE_OAUTH_TOKEN: '',
+    ANTHROPIC_CUSTOM_HEADERS: '',
+    CLAUDE_CODE_USE_BEDROCK: '',
+    CLAUDE_CODE_USE_VERTEX: '',
+    CLAUDE_CODE_USE_FOUNDRY: '',
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(row.window),
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8000',
+    CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: '',
+  }
+  for (const key of HARNESS_MODEL_ENV) env[key] = row.model
+  if (path) env.PATH = path
+  return env
+}
+
+// Check the complete JSON-mode result before returning any text to the parent session.
+export function checkHarnessResult(json: unknown, alias: string): { ok: true; text: string } | { ok: false; reason: string; violation?: true } {
+  if (forbiddenHarnessModel(alias)) return { ok: false, violation: true, reason: 'harness row names a forbidden Claude model' }
+  const value = json as { is_error?: unknown; subtype?: unknown; result?: unknown; modelUsage?: unknown }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, reason: 'harness result is not a JSON object' }
+  if (value.is_error !== false || value.subtype !== 'success') return { ok: false, reason: 'harness result did not complete successfully' }
+  const text = typeof value.result === 'string' ? value.result.trim() : ''
+  if (!text) return { ok: false, reason: 'harness returned an empty result' }
+  if (!value.modelUsage || typeof value.modelUsage !== 'object' || Array.isArray(value.modelUsage)) return { ok: false, reason: 'harness result has no model usage map' }
+  for (const model of Object.keys(value.modelUsage)) {
+    if (forbiddenHarnessModel(model)) return { ok: false, violation: true, reason: 'harness modelUsage includes a forbidden model' }
+  }
+  if (hasChatTemplateLeak(text)) return { ok: false, reason: 'harness answer contains chat-template syntax' }
+  return { ok: true, text }
+}
+
+// Raw chat templates and tool calls are control syntax, not user-facing answers.
+export function hasChatTemplateLeak(text: string): boolean {
+  return /<\|[\w]+\|>|<\/?(?:tool_call|function_call)>/i.test(text)
+}
+
 // Override rows merge over the table by id; new ids append. Invalid rows are dropped and named in `rejected`.
 export function mergeExecutorRows(base: readonly ExecutorRow[], override: unknown): { rows: ExecutorRow[]; rejected: string[] } {
   const rows = [...base]
@@ -292,7 +386,7 @@ export function mergeExecutorRows(base: readonly ExecutorRow[], override: unknow
   return { rows, rejected }
 }
 
-export type SkipReason = 'ineligible' | 'exhausted' | 'expired' | 'not_installed' | 'failed' | 'recent_failures' | 'budget_unknown' | 'budget_spent' | 'quota_unknown'
+export type SkipReason = 'ineligible' | 'exhausted' | 'expired' | 'not_installed' | 'failed' | 'violation' | 'recent_failures' | 'budget_unknown' | 'budget_spent' | 'quota_unknown'
 
 // How a sandbox job ended, from the dispatcher's `status`: `end` decides, and `duration` (whole seconds the job ran)
 // only dates the end.
@@ -342,9 +436,9 @@ export function jobHistory(lines: readonly string[], nowMs: number): { pending: 
   }
   return { pending: placed.filter((p) => !outcomes.has(p.job)).reverse().slice(0, 5), outcomes: [...outcomes.values()] }
 }
-export type AttemptEnd = 'ok' | 'failed' | 'timeout'
+export type AttemptEnd = 'ok' | 'failed' | 'timeout' | 'violation'
 export type AttemptOutcome = { executor: Executor; end: AttemptEnd; ts_ms: number; ended_ms: number }
-const ATTEMPT_ENDS: readonly AttemptEnd[] = ['ok', 'failed', 'timeout']
+const ATTEMPT_ENDS: readonly AttemptEnd[] = ['ok', 'failed', 'timeout', 'violation']
 // From decision-log lines: one outcome per completed Codex attempt, across repositories. Lines with invalid
 // executor IDs, ends, timestamps, or stamps more than a minute in the future are ignored.
 export function attemptHistory(lines: readonly string[], nowMs: number): AttemptOutcome[] {
@@ -571,8 +665,9 @@ export function rankRows(rows: readonly ExecutorRow[], scores: Partial<Record<Ex
     effective[r.id] = s === undefined ? null : s / (Math.max(r.price, 0.01) * peakMultiplier(r, nowMs))
     return true
   })
+  const harness = open.filter((r) => r.transport === 'harness' && r.kind !== 'promotion')
   const promos = open.filter((r) => r.kind === 'promotion')
-  const regular = open.filter((r) => r.kind !== 'promotion')
+  const regular = open.filter((r) => r.transport !== 'harness' && r.kind !== 'promotion')
   const tableIndex = new Map(rows.map((r, index) => [r.id, index]))
   const orderByPace = (group: ExecutorRow[]): ExecutorRow[] => {
     const distance = (r: ExecutorRow): number | undefined => {
@@ -585,5 +680,5 @@ export function rankRows(rows: readonly ExecutorRow[], scores: Partial<Record<Ex
     const over = group.filter((r) => distance(r) !== undefined && distance(r)! < 0).sort(compareDistance)
     return [...under, ...unknown, ...over]
   }
-  return { order: [...orderByPace(promos), ...orderByPace(regular)].map((r) => r.id), skipped, effective }
+  return { order: [...orderByPace(promos), ...harness, ...orderByPace(regular)].map((r) => r.id), skipped, effective }
 }

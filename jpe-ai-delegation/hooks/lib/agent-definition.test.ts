@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { parseAgentDefinition, type AgentDefinition } from './agent-definition'
+import { customAgentSandbox, parseAgentDefinition, type AgentDefinition } from './agent-definition'
 
 test('frontmatter policy forms are parsed, inherited, or fail closed', () => {
   const cases: {
@@ -80,4 +80,34 @@ test('frontmatter policy forms are parsed, inherited, or fail closed', () => {
       expect(definition).toEqual({ prompt: 'Follow the rubric.', ...(row.model !== undefined ? { model: row.model } : {}), ...(row.tools !== undefined ? { tools: row.tools } : {}), ...(row.disallowedTools !== undefined ? { disallowedTools: row.disallowedTools } : {}) })
     }
   }
+})
+
+test('MCP server declarations accept only validated stdio server maps', () => {
+  const block = parseAgentDefinition('---\ntools:\n  - Read\n  - mcp__tasks__get_task\nmcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n      args:\n        - --read-only\n      env:\n        MODE: safe\n---\nUse the task server.')
+  expect(block).toEqual({
+    prompt: 'Use the task server.',
+    tools: ['Read', 'mcp__tasks__get_task'],
+    mcpServers: { tasks: { type: 'stdio', command: '/usr/bin/tasks', args: ['--read-only'], env: { MODE: 'safe' } } },
+  })
+  expect(parseAgentDefinition('---\nmcpServers:\n  - tasks: { type: stdio, command: /usr/bin/tasks, args: [--read-only, "two words"], env: {MODE: safe} }\n---\nUse it.').mcpServers)
+    .toEqual({ tasks: { type: 'stdio', command: '/usr/bin/tasks', args: ['--read-only', 'two words'], env: { MODE: 'safe' } } })
+  expect(customAgentSandbox({ prompt: '', tools: ['Read', 'mcp__tasks__get_task'] })).toBe('read-only')
+
+  const invalid = [
+    'mcpServers:\n  - tasks',
+    'mcpServers:\n  - bad.name:\n      type: stdio\n      command: /usr/bin/tasks',
+    'mcpServers:\n  - tasks:\n      type: http\n      command: /usr/bin/tasks',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      command: relative/tasks',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n      args: [--safe, true]',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n      env: {MODE: false}',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n      env:\n        MODE: null',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n      url: https://example.test',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n      args: --safe',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n  - tasks:\n      type: stdio\n      command: /usr/bin/other',
+    'mcpServers: {tasks: {type: stdio, command: /usr/bin/tasks}}',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      type: stdio\n      command: /usr/bin/tasks',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n      args:\n',
+    'mcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n      env:\n',
+  ]
+  for (const fields of invalid) expect(() => parseAgentDefinition('---\n' + fields + '\n---\nDo work.')).toThrow()
 })
