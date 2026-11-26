@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.79.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.78.1...v6.79.0) (2026-11-26)
+
+
+### Features
+
+* **ai-delegation:** add prefix-cache chaining and session affinity to fast-subagent ([#916](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/916)) ([aaace53](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/aaace534d74f7bb35f8bcdf76cd65552a48b5e79))
+
 ## [6.78.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.78.0...v6.78.1) (2026-11-25)
 
 
