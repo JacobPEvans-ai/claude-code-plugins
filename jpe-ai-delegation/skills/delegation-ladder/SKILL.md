@@ -41,7 +41,12 @@ explicit `plan` or `deep` read-only sandbox. Explicit models, named agents and
 worktree isolation cannot bypass the ladder. Isolated Codex tasks get a
 detached worktree, whose path is returned for review. Custom-agent
 instructions are preserved; namespaced plugin agents resolve from the local
-installed-plugin registry. Missing definitions stop dispatch.
+installed-plugin registry. Missing definitions stop dispatch. An agent type the
+operator retired stops dispatch before any definition is read or executor is
+called, with the replacement command its entry names in
+`~/.config/ai-delegation/retired.json` (a JSON object from type to command,
+read once per session; malformed entries are dropped and named in the log);
+the plugin ships no map, so a missing or unreadable file retires nothing.
 
 The hook places each task in this order and logs one JSON `route` line per
 decision to `~/.claude/ai-delegation.log`:
@@ -109,8 +114,8 @@ decision to `~/.claude/ai-delegation.log`:
 4. An executor failure, an empty answer or an unknown quota moves to the next
    executor; when no executor answers, the spawn is refused with `no non-Claude
    executor answered; nothing ran` and the route line records `stopped`. Only
-   forbidden models, prohibited payloads and a sandbox job that may still open
-   a PR stop routing earlier.
+   forbidden models, retired agent types, prohibited payloads and a sandbox
+   job that may still open a PR stop routing earlier.
 
 For sandbox coding, put `[task: code] [repo: owner/repository]` in the
 description. A public-repo tag alone does not establish that work is coding.

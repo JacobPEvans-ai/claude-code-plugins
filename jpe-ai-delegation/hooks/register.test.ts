@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
 import { attemptHistory, endAnchor, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
 import { register } from './register'
-import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand } from './lib/policy'
+import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import { RECORDED_QUOTA } from './fixtures/quota-instant-query'
 
@@ -71,7 +71,7 @@ function world(w: World = {}) {
       fsTouches.push(path)
       if (w.fsThrows) throw new Error('read failed')
       if (path === w.readThrows || path === w.readHangs) return true
-      if (path.endsWith('/executors.json')) return w.files?.[path] !== undefined
+      if (path.endsWith('/executors.json') || path.endsWith('/retired.json')) return w.files?.[path] !== undefined
       return path.endsWith('models_cache.json') ? w.cache !== false : w.files?.[path] !== undefined || Boolean(w.definition)
     },
     stat: async (path, options) => {
@@ -404,6 +404,47 @@ describe('policy', () => {
     expect(eligibleRows(EXECUTOR_TABLE, false, 0).rows.map((r) => r.id)).toEqual(['codex'])
     expect(rankRows(EXECUTOR_TABLE, { codex: { score: 3, exhausted: false, used: 10, line: 50, distance: 40 }, zcode: { score: 9, exhausted: false, used: 0, line: 50, distance: 50 } }, now).order).toEqual(['zcode', 'codex', 'qwen', 'opencode-go', 'cursor'])
     expect(rankRows(EXECUTOR_TABLE, {}, now).skipped).toEqual({})
+  })
+  test('the operator retired map matches a spawn by its plain name, namespace or not', () => {
+    const command = 'run-helper legacy-desk "<request>"'
+    const parsed = parseRetiredAgents({ 'legacy-helper': command })
+    expect([...parsed.retired]).toEqual([['legacy-helper', command]])
+    expect(parsed.rejected).toEqual([])
+    expect(retiredAgent('legacy-helper', parsed.retired)).toEqual({ type: 'legacy-helper', command })
+    expect(retiredAgent('plugin:legacy-helper', parsed.retired)).toEqual({ type: 'legacy-helper', command })
+    expect(retiredAgent('a:b:legacy-helper', parsed.retired)).toEqual({ type: 'legacy-helper', command })
+    expect(retiredAgent('legacy-helperish', parsed.retired)).toBeUndefined()
+    expect(retiredAgent('reviewer', parsed.retired)).toBeUndefined()
+    expect(retiredAgent(undefined, parsed.retired)).toBeUndefined()
+    expect(retiredAgent('legacy-helper', new Map<string, string>())).toBeUndefined()
+  })
+  test('retired map parsing keeps clean entries and names every malformed one; anything else retires nothing', () => {
+    const parse = (raw: unknown) => {
+      const { retired, rejected } = parseRetiredAgents(raw)
+      return { retired: [...retired], rejected }
+    }
+    for (const raw of [undefined, null, '', 42, true, [], 'legacy-helper']) {
+      expect(parse(raw)).toEqual({ retired: [], rejected: [] })
+    }
+    const command = 'run-helper legacy-desk "<request>"'
+    expect(parse({ 'legacy-helper': command }).retired).toEqual([['legacy-helper', command]])
+    // Boundaries: an 80-character type and a 200-character command stay.
+    expect(parse({ ['t'.repeat(80)]: 'c'.repeat(200) }).retired).toHaveLength(1)
+    const malformed = {
+      'bad type': 'run: something',
+      'a/b': 'run: something',
+      'ns:type': 'run: something',
+      '': 'run: something',
+      ['t'.repeat(81)]: 'run: something',
+      nonstring: 42,
+      empty: '',
+      blank: '   ',
+      overlong: 'c'.repeat(201),
+      prohibited: 'token=abc123',
+    }
+    const parsed = parse({ 'legacy-helper': command, ...malformed })
+    expect(parsed.retired).toEqual([['legacy-helper', command]])
+    expect(parsed.rejected).toEqual(Object.keys(malformed))
   })
 })
 
@@ -832,6 +873,72 @@ describe('model and payload guards', () => {
     const unreadable = world({ fsThrows: true })
     expect(text(await unreadable.agent(call))).toStartWith('FAIL | router |')
     expect(unreadable.nextCalls).toEqual([])
+  })
+  const RETIRED = '/home/test/.config/ai-delegation/retired.json'
+  const RETIRED_COMMAND = 'run-helper legacy-desk "<request>"'
+  const RETIRED_FILE = JSON.stringify({ 'legacy-helper': RETIRED_COMMAND })
+  test('retired agent types are refused before definition lookup, executor, classifier and local model', async () => {
+    for (const [subagent_type, run_in_background] of [
+      ['legacy-helper', false],
+      ['legacy-helper', true],
+      ['plugin:legacy-helper', false],
+      ['plugin:legacy-helper', true],
+    ] as const) {
+      const w = world({ definition: '---\nmodel: haiku\n---\nPerform the task.', files: { [RETIRED]: RETIRED_FILE } })
+      const result = text(await w.agent({ subagent_type, run_in_background }))
+      expect(result).toStartWith(`FAIL | router | agent type legacy-helper is retired; run: ${RETIRED_COMMAND}`)
+      expect(result).toContain('[routing stopped]')
+      expect(work(w)).toEqual([])
+      expect(w.fetches).toEqual([])
+      expect(w.modelCalls).toEqual([])
+      expect(w.agentSpawns).toEqual([])
+      expect(w.submitted).toEqual([])
+      expect(w.nextCalls).toEqual([])
+      expect(w.fsReads.some((path) => path.includes('legacy-helper'))).toBe(false)
+      expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'stopped', reason: `agent type legacy-helper is retired; run: ${RETIRED_COMMAND}` })
+    }
+  })
+  test('types absent from the retired map, named and generic, still follow the executor ladder', async () => {
+    for (const subagent_type of ['reviewer', 'legacy-helperish', 'general-purpose']) {
+      const w = world({ files: { [RETIRED]: RETIRED_FILE } })
+      expect(text(await w.agent({ subagent_type }))).toContain('codex luna xhigh')
+      expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex' })
+      expect(w.nextCalls).toEqual([])
+    }
+  })
+  test('with no retired file nothing is retired and no map is read', async () => {
+    const w = world()
+    expect(text(await w.agent({ subagent_type: 'legacy-helper' }))).toContain('codex luna xhigh')
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex' })
+    expect(w.fsReads.some((path) => path.endsWith('/retired.json'))).toBe(false)
+  })
+  test('a session without a home directory retires nothing', async () => {
+    const w = world({ env: { HOME: '' } })
+    expect(text(await w.agent({ subagent_type: 'legacy-helper' }))).toContain('codex luna xhigh')
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex' })
+    expect(w.fsReads.some((path) => path.endsWith('/retired.json'))).toBe(false)
+  })
+  test('an unreadable retired file retires nothing and is named in the decision log', async () => {
+    const w = world({ files: { [RETIRED]: '{' } })
+    expect(text(await w.agent({ subagent_type: 'legacy-helper' }))).toContain('codex luna xhigh')
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex' })
+    expect(w.calls.some((c) => c.stdin === 'retired agent file unreadable; no agent type is retired\n')).toBe(true)
+  })
+  test('malformed retired entries are dropped and named while the clean entry still refuses', async () => {
+    const w = world({ files: { [RETIRED]: JSON.stringify({ 'legacy-helper': RETIRED_COMMAND, 'bad type': 'run: something', 'overlong': 'c'.repeat(201) }) } })
+    const result = text(await w.agent({ subagent_type: 'legacy-helper' }))
+    expect(result).toStartWith(`FAIL | router | agent type legacy-helper is retired; run: ${RETIRED_COMMAND}`)
+    expect(work(w)).toEqual([])
+    expect(w.calls.some((c) => c.stdin === 'retired agent entries rejected: bad type, overlong\n')).toBe(true)
+  })
+  test('the retired file is read once per session', async () => {
+    const w = world({ files: { [RETIRED]: RETIRED_FILE } })
+    await w.agent({ subagent_type: 'legacy-helper' })
+    await w.agent({ subagent_type: 'plugin:legacy-helper' })
+    await w.agent({ subagent_type: 'reviewer' })
+    // One existence check and one read; every later spawn serves the cached map.
+    expect(w.fsReads.filter((path) => path === RETIRED)).toHaveLength(1)
+    expect(w.fsTouches.filter((path) => path === RETIRED)).toHaveLength(2)
   })
   for (const [name, subagentType] of [['built-in', 'claude-code-guide'], ['plugin', 'codex:codex-rescue']] as const) {
     test(`missing ${name} agent definition takes the executor ladder and its spawn is denied`, async () => {
@@ -2651,6 +2758,7 @@ describe('route telemetry', () => {
     ['forbidden custom agent model', { definition: '---\nmodel: opus\n---\nReview.' }, { subagent_type: 'reviewer' }, 'stopped', 'Sonnet, Opus and Fable subagents are forbidden'],
     ['unreadable custom agent', { fsThrows: true }, { subagent_type: 'reviewer' }, 'stopped', 'custom agent model or tool restrictions could not be read'],
     ['missing custom agent definition', {}, { subagent_type: 'reviewer' }, 'codex', 'highest-ranked eligible executor that answered'],
+    ['retired agent type', { files: { '/home/test/.config/ai-delegation/retired.json': JSON.stringify({ 'legacy-helper': 'run-helper legacy-desk "<request>"' }) } }, { subagent_type: 'legacy-helper' }, 'stopped', 'agent type legacy-helper is retired; run: run-helper legacy-desk "<request>"'],
     ['prohibited payload', {}, { prompt: 'Use token=abc123 here.' }, 'stopped', 'payload contains prohibited content'],
     ['native custom agent without a model', { definition: tracker.replace('model: haiku', 'model: inherit') }, { subagent_type: 'reviewer' }, 'codex', 'highest-ranked eligible executor that answered'],
     ['native custom agent', { definition: tracker }, { subagent_type: 'reviewer' }, 'codex', 'highest-ranked eligible executor that answered'],

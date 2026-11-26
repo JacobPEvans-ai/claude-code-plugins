@@ -153,6 +153,39 @@ export const subagentRunsDeniedCommand = (command: string): boolean => {
 type Spawn = { subagent_type?: string }
 export const isGenericType = (e: Spawn): boolean => e.subagent_type === undefined || ['general-purpose', 'executor', 'Explore', 'Plan'].includes(e.subagent_type)
 
+// Agent types the operator retired, with the command that replaces each one. The map is the operator's own data:
+// the plugin ships none, so a type is retired only where the operator says so.
+export type RetiredAgent = { type: string; command: string }
+// A type name is a plain word: no namespace, no path and no space.
+const RETIRED_TYPE = /^[A-Za-z0-9._-]{1,80}$/
+// A replacement command is a short instruction for the lead, not a payload.
+const RETIRED_COMMAND_MAX_CHARS = 200
+// The operator's retired-agent file: a map from an agent type to the command that replaces it. An entry with a
+// malformed type or command is dropped and named in `rejected`; a file that is not an object retires nothing.
+export function parseRetiredAgents(raw: unknown): { retired: Map<string, string>; rejected: string[] } {
+  const retired = new Map<string, string>()
+  const rejected: string[] = []
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { retired, rejected }
+  for (const [type, command] of Object.entries(raw as Record<string, unknown>)) {
+    if (!RETIRED_TYPE.test(type) || typeof command !== 'string' || !command.trim() ||
+      command.length > RETIRED_COMMAND_MAX_CHARS || !safePayload(command)) {
+      rejected.push(type)
+      continue
+    }
+    retired.set(type, command)
+  }
+  return { retired, rejected }
+}
+
+// The retired type a spawn names and the command that replaces it, or undefined. A namespaced type matches on its
+// last segment, so a plugin agent is retired with the type it extends.
+export function retiredAgent(type: string | undefined, retired: ReadonlyMap<string, string>): RetiredAgent | undefined {
+  if (type === undefined) return undefined
+  const name = type.slice(type.lastIndexOf(':') + 1)
+  const command = retired.get(name)
+  return command === undefined ? undefined : { type: name, command }
+}
+
 // Preferred listed model of a family in Codex's own model cache. The cache ranks models by `priority`
 // (lowest is newest), so no version is parsed or written here and a new release is picked up with no change.
 export function newestModel(cacheText: string, family: string): string | undefined {

@@ -22,7 +22,10 @@ the command builder enforces its model and effort pair. `Explore` and `Plan`
 spawns stay read-only. Sonnet, Opus and Fable choices are denied, including
 custom-agent definitions. Worktree isolation creates a separate checkout for Codex rather
 than selecting a later executor. Custom-agent instructions are loaded before
-classification; unresolved definitions fail closed.
+classification; unresolved definitions fail closed. An agent type the operator
+retired in `~/.config/ai-delegation/retired.json` stops dispatch at once and
+names the replacement command; the plugin ships no map, so a missing or
+unreadable file retires nothing.
 
 The permission judge answers the bypass-immune shell ask on the on-host
 `medium` alias through `LITELLM_LOCAL_BASE_URL`, never spending the Codex
