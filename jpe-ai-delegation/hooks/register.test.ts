@@ -2165,6 +2165,25 @@ describe('executor table', () => {
     expect(text(await w.agent(coding))).toContain('[routed: Qwen sandbox;')
     expect(routeEvents(w).at(-1).skipped['promo-free']).toBe('expired')
   })
+  test('row validation rejects a harness transport with or without its model and window', () => {
+    const bare = { id: 'ghost-harness', transport: 'harness', price: 0 }
+    expect(validRow(bare)).toBeUndefined()
+    expect(validRow({ id: 'ghost-harness', transport: 'harness', model: 'medium', window: 80000, price: 0 })).toBeUndefined()
+    expect(validRow({ id: 'ghost-harness', transport: 'harness', trust: 'subscription-trusted', private_ok: true, price: 0 })).toBeUndefined()
+  })
+  test('merging rejects every harness row, a windowed one among them, by name', () => {
+    const rows = [{ id: 'ghost-harness', transport: 'harness', model: 'medium', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 }]
+    expect(mergeExecutorRows(EXECUTOR_TABLE, rows).rejected).toEqual(['ghost-harness'])
+    expect(mergeExecutorRows(EXECUTOR_TABLE, [...rows, { id: 'codex', price: 3 }]).rejected).toEqual(['ghost-harness'])
+    expect(mergeExecutorRows(EXECUTOR_TABLE, [...rows, { id: 'codex', price: 3 }]).rows.find((r) => r.id === 'codex')?.price).toBe(3)
+  })
+  test('an override harness row is refused by the hook without touching the built-in ladder', async () => {
+    const ghost = JSON.stringify([{ id: 'ghost-harness', transport: 'harness', model: 'medium', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 }])
+    const w = world({ quota: 1, env: gateways, files: { [OVERRIDE]: ghost } })
+    expect(text(await w.agent(coding))).toContain('[routed: Qwen sandbox;')
+    expect(w.calls.some((c) => c.stdin === 'executor override rows rejected: ghost-harness\n')).toBe(true)
+    expect(routeEvents(w).at(-1).eligible).not.toContain('ghost-harness')
+  })
   test('an override cannot open a sandbox row to private work', async () => {
     const w = world({ quota: 1, env: gateways, repository: { visibility: 'private', private: true }, files: { [OVERRIDE]: JSON.stringify([{ id: 'zcode', private_ok: true }]) } })
     expect(text(await w.agent(coding))).toBe(refusedText)
@@ -2238,6 +2257,43 @@ describe('routed children', () => {
     expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(3)
     expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, skipped: { codex: 'recent_failures' } })
   })
+  test('a codex failure that writes no file is logged with its exact reason and no outcome line is lost', async () => {
+    const w = world({ temporaryExit: 1, env: gateways })
+    expect(text(await w.agent())).toStartWith('FAIL | router |')
+    expect(w.writes.some((s) => s.includes('codex failure: could not create final-message file (exit 1)'))).toBe(true)
+    expect(routeEvents(w).filter((line) => line.event === 'outcome')).toEqual([{ ts_ms: 1_000_000, event: 'outcome', executor: 'codex', end: 'failed', ended_ms: 1_000_000 }])
+    expect(w.killed).toEqual([])
+  })
+  test('a non-zero codex exit writes no final-message file read and names the exit code', async () => {
+    const w = world({ codexExit: 3, env: gateways })
+    await w.agent()
+    expect(w.fsReads).toEqual([])
+    expect(w.writes.some((s) => s.includes('codex failure: codex exec exited with code 3'))).toBe(true)
+    expect(routeEvents(w).filter((line) => line.event === 'outcome').map((line) => line.end)).toEqual(['failed'])
+    expect(w.killed).toEqual([])
+  })
+  test('a codex exit with empty stderr logs the bare code without a detail suffix', async () => {
+    const w = world({ codexExit: 3, codexStderr: '', env: gateways })
+    await w.agent()
+    expect(w.writes.some((s) => s.includes('codex failure: codex exec exited with code 3') && !s.includes('codex failure: codex exec exited with code 3 '))).toBe(true)
+  })
+  test('a failed codex exec deletes its temporary final-message file before the outcome is logged', async () => {
+    const w = world({ codexExit: 3, env: gateways })
+    await w.agent()
+    expect(w.calls.some((c) => c.argv.join(' ') === 'rm -f /tmp/final')).toBe(true)
+    const order = w.calls.map((c) => c.argv[0])
+    expect(order.indexOf('rm')).toBeGreaterThan(order.lastIndexOf('mktemp'))
+    expect(routeEvents(w).filter((line) => line.event === 'outcome')).toHaveLength(1)
+    expect(w.spawned.map((argv) => argv[0])).toEqual(['codex'])
+  })
+  test('an empty final message is a failed check that refuses the spawn and names the reason', async () => {
+    const w = world({ answer: '', env: gateways })
+    expect(text(await w.agent())).toBe(refusedText)
+    expect(w.writes.some((s) => s.includes('codex failure: codex exec returned an empty final message'))).toBe(true)
+    expect(routeEvents(w).filter((line) => line.event === 'outcome').map((line) => line.end)).toEqual(['failed'])
+    expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['codex'] })
+    expect(w.killed).toEqual([])
+  })
   test('every child CLI runs with the current profile ahead of the PATH the session started with', async () => {
     const w = world({ quotaUrl: null, codexQuota: 'codex-quota: available {"p":40,"s":null}', env: { ...gateways, USER: 'u', PATH: '/nix/store/stale-launchers/bin:/usr/bin' } })
     await w.agent()
@@ -2302,6 +2358,28 @@ describe('paid rows and router-chat', () => {
       expect(validRow({ ...chat, model })).toBeUndefined()
       expect(validRow({ ...flat, model })).toBeUndefined()
     }
+  })
+  test('validation: a sandbox row with a paid budget is refused, and its id may not be a Claude name', () => {
+    expect(validRow({ id: 'qwen', transport: 'sandbox', tool: 'opencode-qwen', trust: 'sandbox-public', private_ok: false, price: 0.5, billing: 'paid', budget_daily_usd: 5, budget_key: 'agent-chat' })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], id: 'haiku' })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], id: 'Fable' })).toBeUndefined()
+    expect(validRow(EXECUTOR_TABLE[0])).toBeTruthy()
+    expect(validRow({ ...EXECUTOR_TABLE[0], price: 0 })).toBeTruthy()
+  })
+  test('merge: a valid override of one built-in row keeps the built-in table order and touches only that row', () => {
+    const { rows, rejected } = mergeExecutorRows(EXECUTOR_TABLE, [{ id: 'cursor', price: 2 }])
+    expect(rejected).toEqual([])
+    expect(rows.map((r) => r.id)).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
+    expect(rows.find((r) => r.id === 'cursor')?.price).toBe(2)
+    expect(rows.find((r) => r.id === 'qwen')).toEqual(EXECUTOR_TABLE[0])
+  })
+  test('merge: a non-array override input merges nothing and rejects nothing, and an unknown id keeps its fields', () => {
+    expect(mergeExecutorRows(EXECUTOR_TABLE, undefined)).toEqual({ rows: [...EXECUTOR_TABLE], rejected: [] })
+    const { rows, rejected } = mergeExecutorRows(EXECUTOR_TABLE, [{ id: 'new-exec', transport: 'sandbox', tool: 'opencode-qwen', trust: 'sandbox-public', private_ok: false, price: 0.25 }])
+    expect(rejected).toEqual([])
+    expect(rows.map((r) => r.id)).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor', 'new-exec'])
+    expect(rows.find((r) => r.id === 'new-exec')?.price).toBe(0.25)
+    expect(rows.length).toBe(6)
   })
   test('validation: an unpaid router-chat row must use an on-host alias', () => {
     expect(validRow({ ...flat })).toBeTruthy()
