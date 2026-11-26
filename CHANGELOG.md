@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.83.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.82.0...v6.83.0) (2026-11-26)
+
+
+### Features
+
+* **ai-cli-harness-better-practices:** make /goal a wrapper over goal-prompt and craft-goal ([#929](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/929)) ([f8ca7dd](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/f8ca7ddc56fca9541bc8ba4f536e4f0f61b4b214))
+
 ## [6.82.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.81.1...v6.82.0) (2026-11-26)
 
 
