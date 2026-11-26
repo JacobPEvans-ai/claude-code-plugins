@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
 import { attemptHistory, endAnchor, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
 import { register } from './register'
-import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, harnessArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand } from './lib/policy'
+import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import { RECORDED_QUOTA } from './fixtures/quota-instant-query'
 
@@ -21,7 +21,7 @@ type World = {
   quota?: number; codexStderr?: string; codexWindows?: unknown[]; cursorWindows?: unknown[]; now?: number; gatewayFinish?: string; quotaThrows?: boolean; cache?: boolean; codexExit?: number; answer?: string; label?: string
   codexQuota?: 'absent' | 'hangs' | 'refused' | string
   env?: Record<string, string>; definition?: string; files?: Record<string, string>; fsThrows?: boolean; worktreeExit?: number; temporaryExit?: number
-  harnessAnswer?: string; harnessStdout?: string; harnessExit?: number; harnessElapsedMs?: number; childHangs?: boolean
+  childHangs?: boolean
   repository?: unknown; properties?: unknown; githubPrivateAuth?: boolean; githubAuthDenied?: boolean; pr?: unknown; githubError?: boolean; githubInvalidJson?: boolean
   originUrl?: string; pathRealpaths?: Record<string, string>; pathGitRoots?: Record<string, string>; unresolvedPaths?: string[]; pathKinds?: Record<string, 'file' | 'directory'>
   zcodeExit?: number; zcodeOutput?: string; zcodeAvailable?: boolean; zcodeThrows?: boolean; zcodeTruncated?: boolean
@@ -136,12 +136,6 @@ function world(w: World = {}) {
         output = init?.stdin?.startsWith('Classify the delegated task') ? w.label ?? 'standard' : w.answer ?? 'task result'
         return { ...RAN, exitCode: w.codexExit ?? 0, stderr: w.codexStderr ?? '' }
       }
-      if (argv[0] === 'claude') {
-        // Unless the world answers the harness, the child fails its check as before the knob existed.
-        if (w.harnessAnswer === undefined && w.harnessStdout === undefined && w.harnessExit === undefined) return RAN
-        clockNow += w.harnessElapsedMs ?? 0
-        return { ...RAN, exitCode: w.harnessExit ?? 0, stdout: w.harnessStdout ?? JSON.stringify({ is_error: false, result: w.harnessAnswer }) }
-      }
       if (argv[0] === 'codex-quota') {
         if (w.codexQuota === undefined || w.codexQuota === 'absent') throw new Error('spawn codex-quota ENOENT')
         if (w.codexQuota === 'hangs') return new Promise<never>(() => {})
@@ -246,7 +240,7 @@ const NO_EXECUTOR = 'no non-Claude executor answered; nothing ran'
 const NO_EXECUTOR_REASON = 'no executor answered (Claude terminal rung removed)'
 const NO_EXECUTOR_AFTER_ERROR_REASON = 'no executor answered after error (Claude terminal rung removed)'
 const NETWORK_NO_EXECUTOR = 'network work: no non-Claude executor answered; run it in the lead session or through zcode-job/codex CLI'
-const NETWORK_NO_EXECUTOR_REASON = 'network work: no harness executor answered'
+const NETWORK_NO_EXECUTOR_REASON = 'network work: no executor may run it'
 const CLAUDE_SUBAGENT_DENY = 'Claude subagents are disabled by operator order; delegate through a non-Claude executor'
 const refusedText = `FAIL | router | ${NO_EXECUTOR}\n\n[routing stopped]`
 const networkRefusedText = `FAIL | router | ${NETWORK_NO_EXECUTOR}\n\n[routing stopped]`
@@ -349,32 +343,66 @@ describe('policy', () => {
     expect(parseCodexQuota('no object here', 80)).toEqual({ kind: 'unknown' })
     expect(parseCodexQuota('', 80)).toEqual({ kind: 'unknown' })
   })
-  test('the harness rows lead the table, take private work and build the two exact command lines', () => {
-    expect(EXECUTOR_TABLE[0].transport).toBe('harness')
-    expect(EXECUTOR_TABLE[0].private_ok).toBe(true)
-    expect(eligibleRows([EXECUTOR_TABLE[0]], false, 0).rows.map((r) => r.id)).toEqual(['homelab-harness'])
+  test('no executor row has the harness transport and no argv builder starts the claude CLI', () => {
+    expect(EXECUTOR_TABLE.every((r) => (r.transport as string) !== 'harness')).toBe(true)
+    for (const route of Object.values(CODEX)) expect(codexArgv('workspace-write', route, 'gpt-newer-luna', '/tmp/out')[0]).toBe('codex')
     expect(ROUTED_CHILD_TIMEOUT_MS).toBe(1_500_000)
-    expect(harnessArgv('read-only', '/workspace')).toEqual(['claude', '-p', '--max-turns', '100', '--bare', '--exclude-dynamic-system-prompt-sections', '--no-session-persistence', '--output-format', 'json', '--permission-mode', 'dontAsk', '--tools', 'Bash,Read', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true, filesystem: { denyWrite: ['/workspace'] } } })])
-    expect(() => harnessArgv('read-only')).toThrow('absolute directory')
-    expect(() => harnessArgv('read-only', 'relative/path')).toThrow('absolute directory')
-    expect(harnessArgv('workspace-write')).toEqual(['claude', '-p', '--max-turns', '100', '--bare', '--exclude-dynamic-system-prompt-sections', '--no-session-persistence', '--output-format', 'json', '--permission-mode', 'acceptEdits', '--tools', 'Bash,Read,Edit,Write,Grep,Glob', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true } })])
   })
-  test('harness row validation: a good row passes; a missing model and a bad window fail', () => {
+  test('an override row with the harness transport is rejected and an unknown id stays non-fatal', () => {
     const row = { id: 'host-harness', transport: 'harness', model: 'medium', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 }
-    expect(validRow(row)).toBeTruthy()
-    expect(validRow({ ...row, model: 'medium-homelab' })).toBeTruthy()
-    expect(validRow({ ...row, model: undefined })).toBeUndefined()
-    expect(validRow({ ...row, model: 'Medium_1' })).toBeUndefined()
-    expect(validRow({ ...row, window: undefined })).toBeUndefined()
-    expect(validRow({ ...row, window: 15999 })).toBeUndefined()
-    expect(validRow({ ...row, window: 2000001 })).toBeUndefined()
-    expect(validRow({ ...row, window: 80000.5 })).toBeUndefined()
+    expect(validRow(row)).toBeUndefined()
+    expect(validRow({ ...row, id: 'reborn-harness' })).toBeUndefined()
+    const { rows, rejected } = mergeExecutorRows(EXECUTOR_TABLE, [row, { id: 'codex', price: 3 }])
+    expect(rejected).toEqual(['host-harness'])
+    expect(rows.find((r) => r.id === 'codex')?.price).toBe(3)
+    expect(rows.every((r) => (r.transport as string) !== 'harness')).toBe(true)
   })
-  test('a harness row ranks ahead of every other transport when every quota is unknown', () => {
+  test('validRow rejects any row with the harness transport, with and without model and window', () => {
+    const trusted = { trust: 'subscription-trusted', private_ok: true, price: 0 }
+    expect(validRow({ id: 'host-harness', transport: 'harness', model: 'medium', window: 80000, ...trusted })).toBeUndefined()
+    expect(validRow({ id: 'host-harness', transport: 'harness', ...trusted })).toBeUndefined()
+    expect(validRow({ id: 'host-harness', transport: 'harness', model: 'medium', ...trusted })).toBeUndefined()
+    expect(validRow({ id: 'host-harness', transport: 'harness', window: 80000, ...trusted })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], id: 'rebuilt-harness', transport: 'harness' })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[3], id: 'rebuilt-harness', transport: 'harness', model: 'medium', window: 80000 })).toBeUndefined()
+    expect(validRow({ id: 'host-harness', transport: 'harness', model: 'medium-homelab', window: 80000, ...trusted })).toBeUndefined()
+    expect(validRow({ id: 'host-harness', transport: 'harness', trust: 'sandbox-public', private_ok: false, price: 0 })).toBeUndefined()
+  })
+  test('mergeExecutorRows drops an override row that sets the harness transport and names it in rejected', () => {
+    const turnHarness = (id: string) => ({ id, transport: 'harness', model: 'medium', window: 80000 })
+    const overCodex = mergeExecutorRows(EXECUTOR_TABLE, [turnHarness('codex')])
+    expect(overCodex.rejected).toEqual(['codex'])
+    expect(overCodex.rows.find((r) => r.id === 'codex')?.transport).toBe('codex')
+    const appended = mergeExecutorRows(EXECUTOR_TABLE, [turnHarness('host-harness')])
+    expect(appended.rejected).toEqual(['host-harness'])
+    expect(appended.rows.map((r) => r.id)).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
+    const mixed = mergeExecutorRows(EXECUTOR_TABLE, [turnHarness('qwen'), { id: 'cursor', price: 2 }, turnHarness('new-harness')])
+    expect(mixed.rejected).toEqual(['qwen', 'new-harness'])
+    expect(mixed.rows.find((r) => r.id === 'cursor')?.price).toBe(2)
+    expect(mixed.rows.map((r) => r.id)).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
+    expect(mixed.rows.every((r) => (r.transport as string) !== 'harness')).toBe(true)
+  })
+  test('the executor table carries no harness transport and no harness id', () => {
+    expect(EXECUTOR_TABLE.some((r) => (r.transport as string) === 'harness')).toBe(false)
+    expect(EXECUTOR_TABLE.some((r) => r.id.includes('harness'))).toBe(false)
+    expect(EXECUTOR_TABLE.every((r) => ['codex', 'sandbox', 'router-chat'].includes(r.transport))).toBe(true)
+  })
+  test('rankRows never returns a harness id for any score input', () => {
     const now = Date.parse('2026-11-14T12:00:00Z')
-    const privateRows = eligibleRows(EXECUTOR_TABLE, false, 0).rows
-    expect(rankRows(privateRows, {}, now).order).toEqual(['homelab-harness', 'host-harness', 'codex'])
-    expect(rankRows(EXECUTOR_TABLE, { codex: { score: 3, exhausted: false, used: 10, line: 50, distance: 40 }, zcode: { score: 9, exhausted: false, used: 0, line: 50, distance: 50 } }, now).order[0]).toBe('homelab-harness')
+    const atDistance = (distance: number) => ({ exhausted: false, used: 50 - distance, line: 50, distance })
+    const harness = { 'host-harness': atDistance(99), 'homelab-harness': { exhausted: true } }
+    expect(rankRows(EXECUTOR_TABLE, {}, now).order).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
+    expect(rankRows(EXECUTOR_TABLE, harness, now).order).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
+    expect(rankRows(EXECUTOR_TABLE, { ...harness, codex: atDistance(30) }, now).order).toEqual(['codex', 'qwen', 'zcode', 'opencode-go', 'cursor'])
+    expect(rankRows(EXECUTOR_TABLE, { ...harness, qwen: atDistance(-1), codex: atDistance(1), cursor: { exhausted: true } }, now).order).toEqual(['codex', 'zcode', 'opencode-go', 'qwen'])
+    expect(rankRows(EXECUTOR_TABLE, { qwen: atDistance(30), zcode: atDistance(30), 'opencode-go': atDistance(30), codex: atDistance(30), cursor: atDistance(30) }, now).order).not.toContain('host-harness')
+    expect(rankRows(EXECUTOR_TABLE, { zcode: { exhausted: true }, cursor: { exhausted: true } }, now).order.join(' ')).not.toMatch(/harness/)
+    expect(rankRows(EXECUTOR_TABLE, harness, now).order.join(' ')).not.toMatch(/harness/)
+  })
+  test('unknown scores keep table order and private work reaches only Codex', () => {
+    const now = Date.parse('2026-11-14T12:00:00Z')
+    expect(eligibleRows(EXECUTOR_TABLE, false, 0).rows.map((r) => r.id)).toEqual(['codex'])
+    expect(rankRows(EXECUTOR_TABLE, { codex: { score: 3, exhausted: false, used: 10, line: 50, distance: 40 }, zcode: { score: 9, exhausted: false, used: 0, line: 50, distance: 50 } }, now).order).toEqual(['zcode', 'codex', 'qwen', 'opencode-go', 'cursor'])
     expect(rankRows(EXECUTOR_TABLE, {}, now).skipped).toEqual({})
   })
 })
@@ -758,7 +786,7 @@ describe('Codex rung', () => {
       const isolation = options.worktreeExit ? 'worktree' : undefined
       const issued = { description: '[class: standard]', prompt: 'Implement the change.', ...(isolation ? { isolation } : {}) }
       expect(text(await w.agent(issued))).toBe(refusedText)
-      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['homelab-harness', 'host-harness', 'codex'] })
+      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['codex'] })
       expect(w.nextCalls).toEqual([])
       expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
     })
@@ -767,7 +795,7 @@ describe('Codex rung', () => {
     test(`unknown quota and an absent native read skip Codex as quota_unknown: ${JSON.stringify(options)}`, async () => {
       const w = world(options)
       expect(text(await w.agent())).toBe(refusedText)
-      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, skipped: { codex: 'quota_unknown' }, eligible: ['homelab-harness', 'host-harness', 'codex'], scores: { codex: { used: null, line: null } } })
+      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, skipped: { codex: 'quota_unknown' }, eligible: ['codex'], scores: { codex: { used: null, line: null } } })
     })
   }
 })
@@ -979,7 +1007,7 @@ describe('capped ladder', () => {
     expect(w.calls.find((c) => c.argv[0] === 'zcode-job')?.argv).toEqual(['zcode-job', 'start', '--tool', 'opencode-qwen', 'owner/project', `${coding.prompt}\n\nReturn a ready PR. Never auto-merge. The trusted lead must leak-scan the PR before merge.`])
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', kind: { value: 'code', source: 'tag' } })
     expect(w.calls.find((c) => c.argv[1] === 'start')?.env).toEqual({ UNTRUSTED_OK: 'public' })
-    expect(w.calls.filter((c) => c.argv[0] !== 'claude' && c.argv[1] !== 'start').every((c) => c.env === undefined)).toBe(true)
+    expect(w.calls.filter((c) => c.argv[1] !== 'start').every((c) => c.env === undefined)).toBe(true)
     expect(w.fetches.map((f) => f.url)).toEqual(['https://api.github.com/repos/owner/project', 'https://api.github.com/repos/owner/project/pulls/12'])
     expect(w.nextCalls).toEqual([])
   })
@@ -1202,39 +1230,62 @@ describe('refusal instead of a Claude rung', () => {
 
 describe('network work', () => {
   const call = { description: '[class: standard] [needs: network]', prompt: 'Merge the green PRs.' }
-  test('a [needs: network] spawn runs on a harness row and never on a Claude model', async () => {
-    const w = world({ env: gateways, harnessAnswer: 'merged' })
-    expect(text(await w.agent(call))).toContain('[routed: harness medium-homelab]')
-    expect(w.nextCalls).toEqual([])
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'homelab-harness', reason: 'network work', eligible: ['homelab-harness', 'host-harness'] })
+  test('the network refusal wording names no harness executor', () => {
+    expect(NETWORK_NO_EXECUTOR).toBe('network work: no non-Claude executor answered; run it in the lead session or through zcode-job/codex CLI')
+    expect(NETWORK_NO_EXECUTOR_REASON).toBe('network work: no executor may run it')
+    expect(networkRefusedText).toBe('FAIL | router | network work: no non-Claude executor answered; run it in the lead session or through zcode-job/codex CLI\n\n[routing stopped]')
+    expect(networkRefusedRoute).toEqual({ chosen: 'stopped', reason: 'network work: no executor may run it' })
+    expect(NETWORK_NO_EXECUTOR).not.toContain('harness')
+    expect(NETWORK_NO_EXECUTOR_REASON).not.toContain('harness')
   })
-  test('a prompt-head [needs: network] tag runs on a harness row', async () => {
-    const spawn = { description: 'review request', prompt: '[needs: network] Merge the green PRs.' }
-    const w = world({ env: gateways, harnessAnswer: 'merged' })
-    expect(text(await w.agent(spawn))).toContain('[routed: harness medium-homelab]')
-    expect(w.nextCalls).toEqual([])
-  })
-  test('a network spawn with no harness answer is refused, never run in the session', async () => {
+  test('a [needs: network] spawn is refused with no executor attempt', async () => {
     const w = world({ env: gateways })
     expect(text(await w.agent(call))).toBe(networkRefusedText)
+    expect(routeEvents(w).at(-1)).toMatchObject(networkRefusedRoute)
+    expect(w.spawned).toEqual([])
+    expect(work(w)).toEqual([])
+    expect(w.fetches).toEqual([])
     expect(w.nextCalls).toEqual([])
-    expect(routeEvents(w).at(-1)).toMatchObject({ ...networkRefusedRoute, eligible: ['homelab-harness', 'host-harness'], fell_through_from: ['homelab-harness', 'host-harness'] })
   })
-  test('a network spawn without the router URL is refused with the harness rows not installed', async () => {
-    const w = world()
+  test('a network-tagged spawn is refused at once with no child process started', async () => {
+    const w = world({ env: gateways })
     expect(text(await w.agent(call))).toBe(networkRefusedText)
+    const event = routeEvents(w).at(-1)
+    expect(event.chosen).toBe('stopped')
+    expect(event.reason).toBe('network work: no executor may run it')
+    expect(event.eligible).toEqual([])
+    expect(event.jobs).toEqual([])
+    expect(event.kind).toEqual({ value: 'other', source: 'none' })
+    expect(work(w)).toEqual([])
+    expect(w.spawned).toEqual([])
+    expect(w.fetches).toEqual([])
     expect(w.nextCalls).toEqual([])
-    expect(routeEvents(w).at(-1)).toMatchObject({ ...networkRefusedRoute, skipped: { 'homelab-harness': 'not_installed', 'host-harness': 'not_installed' } })
+    expect(w.submitted).toEqual([])
+    expect(routeEvents(w)).toHaveLength(1)
+    expect(routeEvents(w)[0].event).toBe('route')
   })
-  test('a custom agent declaring egress: network runs on the harness rows', async () => {
-    const w = world({ env: gateways, harnessAnswer: 'merged', definition: '---\nname: gh-ops\negress: network\ntools:\n  - Bash\n  - Read\n---\nOperate GitHub.' })
+  test('a prompt-head [needs: network] tag is refused the same way', async () => {
+    const spawn = { description: 'review request', prompt: '[needs: network] Merge the green PRs.' }
+    const w = world({ env: gateways })
+    expect(text(await w.agent(spawn))).toBe(networkRefusedText)
+    expect(routeEvents(w).at(-1)).toMatchObject(networkRefusedRoute)
+    expect(w.spawned).toEqual([])
+    expect(work(w)).toEqual([])
+    expect(w.nextCalls).toEqual([])
+  })
+  test('a custom agent declaring egress: network is refused without an executor attempt', async () => {
+    const w = world({ env: gateways, definition: '---\nname: gh-ops\negress: network\ntools:\n  - Bash\n  - Read\n---\nOperate GitHub.' })
     const spawn = { subagent_type: 'gh-ops', description: '[class: standard]', prompt: 'Merge the green PRs.' }
-    expect(text(await w.agent(spawn))).toContain('[routed: harness medium-homelab]')
+    expect(text(await w.agent(spawn))).toBe(networkRefusedText)
+    expect(routeEvents(w).at(-1)).toMatchObject(networkRefusedRoute)
+    expect(work(w)).toEqual([])
     expect(w.nextCalls).toEqual([])
   })
   test('a background network spawn is refused outright and starts no routed job', async () => {
     const w = world({ env: gateways })
     expect(text(await w.agent({ ...call, run_in_background: true }))).toBe(networkRefusedText)
+    expect(routeEvents(w).at(-1)).toMatchObject(networkRefusedRoute)
+    expect(w.spawned).toEqual([])
     expect(w.submitted).toEqual([])
   })
   test('an unknown egress value fails the definition closed', async () => {
@@ -1412,7 +1463,7 @@ describe('untagged kind classification', () => {
     await w.agent({ description: undefined, prompt: 'Update src/main.ts.' })
     const event = routeEvents(w).at(-1)
     expect(event.kind).toEqual({ value: 'other', source: 'classifier' })
-    expect(event.eligible).toEqual(['homelab-harness', 'host-harness', 'codex'])
+    expect(event.eligible).toEqual(['codex'])
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(w.fetches.some((f) => f.url.startsWith('https://api.github.com/'))).toBe(false)
   })
@@ -1520,15 +1571,18 @@ describe('judge and session policy', () => {
       const policy = r.sections[0].text
       expect(policy).not.toContain('Check codex-quota first')
       expect(policy).toStartWith(`codex-quota: ${status}\nThe jpe-ai-delegation hook places every Agent spawn.`)
-      for (const fragment of ['Tag self-contained text work [class: text]', 'put all of its text in the prompt', 'on-host local model first', 'ranked by usage pace', 'non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository', 'ready PR', 'leak-scan it before merge', 'never auto-merge', 'Codex runs Luna at xhigh, the only Codex model and effort', 'Delegation routing', 'Tag work that needs network or GitHub writes [needs: network]', 'There is no Claude rung', 'no Agent spawn ever runs on a Claude model', 'is refused, not run in the session', 'Never Sonnet, Opus or Fable subagents', 'Never send secrets, credentials, inventory or incident content to any executor', 'Antigravity stays a second-opinion reviewer']) expect(policy).toContain(fragment)
+      for (const fragment of ['Tag self-contained text work [class: text]', 'put all of its text in the prompt', 'on-host local model first', 'ranked by usage pace', 'non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository', 'ready PR', 'leak-scan it before merge', 'never auto-merge', 'Codex runs Luna at xhigh, the only Codex model and effort', 'Delegation routing', 'Tag work that needs network or GitHub writes [needs: network]', 'no executor may run it', 'There is no Claude rung', 'no Agent spawn ever runs on a Claude model', 'is refused, not run in the session', 'Never Sonnet, Opus or Fable subagents', 'Never send secrets, credentials, inventory or incident content to any executor', 'Antigravity stays a second-opinion reviewer']) expect(policy).toContain(fragment)
+      expect(policy).toContain('no executor may run it, so the hook refuses it at once')
+      expect(policy).not.toContain('harness executors')
+      expect(policy).not.toContain('harness')
     })
   }
 })
 
 describe('scoring and eligibility policy', () => {
   test('eligibility: sandbox tools see public code only; Codex sees everything', () => {
-    expect(eligibleRows(EXECUTOR_TABLE, true, 0).rows.map((r) => r.id)).toEqual(['homelab-harness', 'host-harness', 'qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
-    expect(eligibleRows(EXECUTOR_TABLE, false, 0).rows.map((r) => r.id)).toEqual(['homelab-harness', 'host-harness', 'codex'])
+    expect(eligibleRows(EXECUTOR_TABLE, true, 0).rows.map((r) => r.id)).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
+    expect(eligibleRows(EXECUTOR_TABLE, false, 0).rows.map((r) => r.id)).toEqual(['codex'])
     expect(eligibleRows(EXECUTOR_TABLE, false, 0).skipped).toEqual({ qwen: 'ineligible', zcode: 'ineligible', 'opencode-go': 'ineligible', cursor: 'ineligible' })
     expect(validRow(EXECUTOR_TABLE[0])).toBeTruthy()
   })
@@ -1543,8 +1597,8 @@ describe('scoring and eligibility policy', () => {
     expect(scoreWindows(undefined, 1000)).toEqual({ score: undefined, exhausted: false })
   })
   test('known under-line scores lead; unknown rows keep static order; exhausted drop', () => {
-    // The two harness rows sit first in the table, so the pace group here is the four rows after them.
-    const rows = EXECUTOR_TABLE.slice(2, 6)
+    // Cursor has no series in this fixture, so the pace group here is the four rows before it.
+    const rows = EXECUTOR_TABLE.slice(0, 4)
     const offPeak = Date.parse('2026-11-14T12:00:00Z')
     expect(rankRows(rows, {}, offPeak).order).toEqual(['qwen', 'zcode', 'opencode-go', 'codex'])
     expect(rankRows(rows, { codex: { score: 3, exhausted: false, used: 10, line: 50, distance: 40 } }, offPeak).order).toEqual(['codex', 'qwen', 'zcode', 'opencode-go'])
@@ -1583,29 +1637,29 @@ describe('usage pace ranking', () => {
   const atDistance = (distance: number) => ({ exhausted: false, used: 50 - distance, line: 50, distance })
 
   test('an under-line executor ranks ahead of an over-line executor', () => {
-    const rows = [EXECUTOR_TABLE[3], EXECUTOR_TABLE[5]]
+    const rows = [EXECUTOR_TABLE[1], EXECUTOR_TABLE[3]]
     const scores = { zcode: atDistance(-1), codex: atDistance(1) }
     expect(rankRows(rows, scores, now).order).toEqual(['codex', 'zcode'])
   })
   test('under-line executors rank by distance descending and ties keep table order', () => {
-    const rows = [EXECUTOR_TABLE[3], EXECUTOR_TABLE[5], EXECUTOR_TABLE[6]]
+    const rows = [EXECUTOR_TABLE[1], EXECUTOR_TABLE[3], EXECUTOR_TABLE[4]]
     const scores = { zcode: atDistance(10), codex: atDistance(30), cursor: atDistance(30) }
     expect(rankRows(rows, scores, now).order).toEqual(['codex', 'cursor', 'zcode'])
   })
   test('all over-line executors rank with the least over first', () => {
-    const rows = [EXECUTOR_TABLE[3], EXECUTOR_TABLE[5], EXECUTOR_TABLE[6]]
+    const rows = [EXECUTOR_TABLE[1], EXECUTOR_TABLE[3], EXECUTOR_TABLE[4]]
     const scores = { zcode: atDistance(-30), codex: atDistance(-5), cursor: atDistance(-10) }
     expect(rankRows(rows, scores, now).order).toEqual(['codex', 'cursor', 'zcode'])
   })
   test('unknown executors stay between known under-line and over-line executors', () => {
-    const rows = [EXECUTOR_TABLE[3], EXECUTOR_TABLE[4], EXECUTOR_TABLE[5]]
+    const rows = [EXECUTOR_TABLE[1], EXECUTOR_TABLE[2], EXECUTOR_TABLE[3]]
     const scores = { zcode: atDistance(-1), codex: atDistance(1) }
     expect(rankRows(rows, scores, now).order).toEqual(['codex', 'opencode-go', 'zcode'])
   })
-  test('equal distances and unknown scores keep table order, so the first harness row ranks first', () => {
+  test('equal distances and unknown scores keep table order', () => {
     const equal = { qwen: atDistance(30), zcode: atDistance(30), 'opencode-go': atDistance(30), codex: atDistance(30), cursor: atDistance(30) }
-    expect(rankRows(EXECUTOR_TABLE, equal, now).order[0]).toBe('homelab-harness')
-    expect(rankRows(EXECUTOR_TABLE, {}, now).order[0]).toBe('homelab-harness')
+    expect(rankRows(EXECUTOR_TABLE, equal, now).order[0]).toBe('qwen')
+    expect(rankRows(EXECUTOR_TABLE, {}, now).order[0]).toBe('qwen')
   })
   test('the line reaches 100 at the one-day margin for a long window', () => {
     const day = 86_400
@@ -1643,15 +1697,14 @@ describe('usage pace ranking', () => {
     const w = world({ quotaUrl: null })
     await w.agent(coding)
     const event = routeEvents(w).at(-1)
-    const nonHarness = EXECUTOR_TABLE.filter((row) => row.transport !== 'harness')
-    expect(event.eligible).toEqual([...nonHarness.map((row) => row.id)])
-    expect(event.chosen).toBe(nonHarness[0].id)
-    for (const row of nonHarness) expect(event.scores[row.id]).toMatchObject({ used: null, line: null })
+    expect(event.eligible).toEqual(EXECUTOR_TABLE.map((row) => row.id))
+    expect(event.chosen).toBe(EXECUTOR_TABLE[0].id)
+    for (const row of EXECUTOR_TABLE) expect(event.scores[row.id]).toMatchObject({ used: null, line: null })
   })
-  test('no readings keep table order only without promotions: an appended promotion ranks first after the harness rows', () => {
+  test('no readings keep table order only without promotions: an appended promotion ranks first', () => {
     const promotion = { id: 'promo-free', transport: 'sandbox', tool: 'opencode-free', trust: 'sandbox-public', private_ok: false, price: 0, kind: 'promotion', expires: '2030-01-01T00:00:00Z' }
     const rows = mergeExecutorRows(EXECUTOR_TABLE, [promotion]).rows
-    expect(rankRows(rows, {}, Date.parse('2026-11-14T12:00:00Z')).order).toEqual(['homelab-harness', 'host-harness', 'promo-free', ...EXECUTOR_TABLE.slice(2).map((row) => row.id)])
+    expect(rankRows(rows, {}, Date.parse('2026-11-14T12:00:00Z')).order).toEqual(['promo-free', ...EXECUTOR_TABLE.map((row) => row.id)])
   })
 })
 
@@ -1683,7 +1736,7 @@ describe('routing batch', () => {
     const w = world({ quota: 1, env: gateways })
     const call = { description: '[class: text]', prompt: `Classify: ${'a'.repeat(700_000)}` }
     expect(text(await w.agent(call))).toBe(refusedText)
-    expect(w.fetches.map((f) => f.url)).toEqual(['http://localhost:8000/model/info', 'http://localhost:8000/v1/chat/completions'])
+    expect(w.fetches.map((f) => f.url)).toEqual(['http://localhost:8000/model/info'])
     expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, local: { alias: null } })
     expect(w.nextCalls).toEqual([])
   })
@@ -1691,7 +1744,7 @@ describe('routing batch', () => {
     test(`4: local ${name} is refused rather than run on a Claude model`, async () => {
       const w = world({ quota: 1, env: gateways, ...options })
       expect(text(await w.agent(textTask))).toBe(refusedText)
-      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['local small', 'homelab-harness', 'host-harness'] })
+      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['local small'] })
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -2115,7 +2168,7 @@ describe('cursor executor', () => {
     expect(w.nextCalls).toEqual([])
   })
   test('at-pace Codex ranks before unknown Cursor', () => {
-    const rows = [EXECUTOR_TABLE[6], EXECUTOR_TABLE[5]]
+    const rows = [EXECUTOR_TABLE[4], EXECUTOR_TABLE[3]]
     const scores = { codex: { score: 0, exhausted: false, used: 50, line: 50, distance: 0 } }
     expect(rankRows(rows, scores, Date.parse('2026-11-14T12:00:00Z')).order).toEqual(['codex', 'cursor'])
   })
@@ -2146,17 +2199,17 @@ describe('executor table', () => {
   const OVERRIDE = '/home/test/.config/ai-delegation/executors.json'
   const promo = { id: 'promo-free', transport: 'sandbox', tool: 'opencode-free', trust: 'sandbox-public', private_ok: false, price: 0, kind: 'promotion' }
   test('the built-in table holds every row and validates', () => {
-    expect(EXECUTOR_TABLE.map((r) => r.id)).toEqual(['homelab-harness', 'host-harness', 'qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
+    expect(EXECUTOR_TABLE.map((r) => r.id)).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
     expect(EXECUTOR_TABLE.every((r) => validRow(r))).toBe(true)
-    expect(EXECUTOR_TABLE[0]).toEqual({ id: 'homelab-harness', transport: 'harness', model: 'medium-homelab', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 })
-    expect(EXECUTOR_TABLE[2]).toEqual({ id: 'qwen', transport: 'sandbox', tool: 'opencode-qwen', trust: 'sandbox-public', private_ok: false, price: 0.5 })
+    expect(EXECUTOR_TABLE[0]).toEqual({ id: 'qwen', transport: 'sandbox', tool: 'opencode-qwen', trust: 'sandbox-public', private_ok: false, price: 0.5 })
+    expect(EXECUTOR_TABLE[3]).toEqual({ id: 'codex', transport: 'codex', trust: 'subscription-trusted', private_ok: true, quota: 'codex', price: 1 })
   })
   test('validation: only subscription-trusted rows may take private work; ids and promotions are strict', () => {
-    expect(validRow({ ...EXECUTOR_TABLE[2], private_ok: true })).toBeUndefined()
-    expect(validRow({ ...EXECUTOR_TABLE[2], trust: 'untrusted-api' })).toBeUndefined()
-    for (const id of CLAUDE_MODEL_NAMES) expect(validRow({ ...EXECUTOR_TABLE[2], id })).toBeUndefined()
-    expect(validRow({ ...EXECUTOR_TABLE[2], id: 'Bad Id' })).toBeUndefined()
-    expect(validRow({ ...EXECUTOR_TABLE[2], tool: undefined })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], private_ok: true })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], trust: 'untrusted-api' })).toBeUndefined()
+    for (const id of CLAUDE_MODEL_NAMES) expect(validRow({ ...EXECUTOR_TABLE[0], id })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], id: 'Bad Id' })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], tool: undefined })).toBeUndefined()
     expect(validRow({ ...promo })).toBeUndefined()
     expect(validRow({ ...promo, expires: '2030-01-01T00:00:00Z' })).toBeTruthy()
   })
@@ -2167,7 +2220,7 @@ describe('executor table', () => {
     expect(validRow({ ...forged, trust: 'sandbox-public' })).toBeUndefined()
     const { rows, rejected } = mergeExecutorRows(EXECUTOR_TABLE, [forged, { id: 'zcode', trust: 'subscription-trusted', private_ok: true }])
     expect(rejected).toEqual(['sandbox-private', 'zcode'])
-    expect(rows.map((r) => r.id)).toEqual(['homelab-harness', 'host-harness', 'qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
+    expect(rows.map((r) => r.id)).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
     expect(rows.find((r) => r.id === 'zcode')).toMatchObject({ trust: 'sandbox-public', private_ok: false })
   })
   test('merge: rows override by id, new ids append, invalid rows are rejected by name', () => {
@@ -2194,10 +2247,10 @@ describe('executor table', () => {
       cursor: { exhausted: true },
     }
     const r = rankRows(rows, scores, peakMonday)
-    expect(r.order).toEqual(['homelab-harness', 'host-harness', 'promo-free', 'codex', 'opencode-go', 'qwen', 'zcode'])
+    expect(r.order).toEqual(['promo-free', 'codex', 'opencode-go', 'qwen', 'zcode'])
     expect(r.effective).toMatchObject({ zcode: 5, 'opencode-go': 5, codex: 8 })
     expect(r.skipped).toEqual({ cursor: 'exhausted' })
-    expect(rankRows(rows, scores, Date.parse('2026-11-14T07:30:00Z')).order).toEqual(['homelab-harness', 'host-harness', 'promo-free', 'codex', 'opencode-go', 'qwen', 'zcode'])
+    expect(rankRows(rows, scores, Date.parse('2026-11-14T07:30:00Z')).order).toEqual(['promo-free', 'codex', 'opencode-go', 'qwen', 'zcode'])
   })
   test('an override promotion sorts first for public code while it lasts', async () => {
     const w = world({ quota: 1, env: gateways, files: { [OVERRIDE]: JSON.stringify([{ ...promo, expires: '2030-01-01T00:00:00Z' }]) } })
@@ -2252,69 +2305,17 @@ describe('executor table', () => {
     expect(w.nextCalls).toEqual([])
   })
 })
-describe('harness executor', () => {
-  test('a code brief skips both harness rows as ineligible and never starts the harness', async () => {
-    const w = world({ quota: 1, env: gateways, harnessAnswer: 'done' })
-    await w.agent(coding)
-    expect(routeEvents(w).at(-1).skipped).toMatchObject({ 'homelab-harness': 'ineligible', 'host-harness': 'ineligible' })
-    expect(w.calls.some((c) => c.argv[0] === 'claude')).toBe(false)
-  })
-  test('a read-only spawn gets a sandboxed shell that cannot write the session directory', async () => {
-    const w = world({ quota: 1, env: gateways, harnessAnswer: 'found' })
-    expect(text(await w.agent({ subagent_type: 'Explore', description: 'read and triage', prompt: 'Read app.ts.' }))).toContain('[routed: harness medium-homelab]')
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')[0].argv).toEqual(harnessArgv('read-only', '/workspace'))
-  })
-  test('a checked harness answer is routed under the row id with the model named in the footer', async () => {
-    const w = world({ quota: 1, env: gateways, harnessAnswer: 'done' })
-    expect(text(await w.agent())).toContain('[routed: harness medium-homelab]')
-    const claude = w.calls.filter((c) => c.argv[0] === 'claude')
-    expect(claude).toHaveLength(1)
-    expect(claude[0].argv).toEqual(harnessArgv('workspace-write'))
-    expect(claude[0].stdin).toBe('Implement the change.')
-    expect(claude[0].env).toMatchObject({ ANTHROPIC_BASE_URL: 'http://localhost:8000', ANTHROPIC_AUTH_TOKEN: 'local-proxy', ANTHROPIC_API_KEY: '', CLAUDE_CODE_OAUTH_TOKEN: '', ANTHROPIC_MODEL: 'medium-homelab', ANTHROPIC_DEFAULT_OPUS_MODEL: 'medium-homelab', ANTHROPIC_DEFAULT_SONNET_MODEL: 'medium-homelab', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'medium-homelab', CLAUDE_CODE_SUBAGENT_MODEL: 'medium-homelab', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_MAX_CONTEXT_TOKENS: '80000', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8000', CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: '', CLAUDE_CODE_USE_BEDROCK: '', CLAUDE_CODE_USE_VERTEX: '', CLAUDE_CODE_USE_FOUNDRY: '', ANTHROPIC_CUSTOM_HEADERS: '' })
-    expect(claude[0].env?.PATH).toBe('/home/test/.local/bin:/run/current-system/sw/bin')
-    expect(claude[0].timeoutMs).toBe(ROUTED_CHILD_TIMEOUT_MS)
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'homelab-harness', reason: 'highest-ranked eligible executor that answered' })
-  })
-  test('a review ask that requests no change runs every routed child read-only', async () => {
+describe('routed Codex child', () => {
+  test('a review ask that requests no change runs the routed child read-only', async () => {
     const w = world({ env: gateways })
-    await w.agent({ prompt: 'Review the supplied diff and report the findings.' })
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')[0].argv).toEqual(harnessArgv('read-only', '/workspace'))
+    expect(text(await w.agent({ prompt: 'Review the supplied diff and report the findings.' }))).toContain('codex luna xhigh')
     expect(runs(w)[0].argv).toContain('read-only')
     expect(runs(w)[0].argv).not.toContain('workspace-write')
   })
   test('a review ask that also requests a change keeps the write sandbox', async () => {
     const w = world({ env: gateways })
-    await w.agent({ prompt: 'Review the supplied diff, then implement the fixes.' })
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')[0].argv).toEqual(harnessArgv('workspace-write'))
+    expect(text(await w.agent({ prompt: 'Review the supplied diff, then implement the fixes.' }))).toContain('codex luna xhigh')
     expect(runs(w)[0].argv).toContain('workspace-write')
-  })
-  test('a harness answer that fails its check moves to the next row, the second harness row, then Codex', async () => {
-    const w = world({ env: gateways, harnessStdout: '{"is_error":false,"result":"   "}' })
-    expect(text(await w.agent())).toContain('[routed: codex luna xhigh')
-    const claude = w.calls.filter((c) => c.argv[0] === 'claude')
-    expect(claude).toHaveLength(2)
-    expect(claude[1].env?.ANTHROPIC_MODEL).toBe('medium')
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex', skipped: { 'homelab-harness': 'failed', 'host-harness': 'failed' } })
-  })
-  test('three failed harness attempts skip each row on the fourth spawn and routing continues to Codex', async () => {
-    const logTail: unknown[] = []
-    const w = world({ env: gateways, harnessExit: 1, logTail })
-    let copied = 0
-    const rememberOutcomes = () => {
-      const outcomes = routeEvents(w).filter((line) => line.event === 'outcome')
-      logTail.push(...outcomes.slice(copied))
-      copied = outcomes.length
-    }
-    await w.agent(); rememberOutcomes()
-    await w.agent(); rememberOutcomes()
-    await w.agent(); rememberOutcomes()
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex' })
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(6)
-
-    await w.agent()
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(6)
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex', skipped: { 'homelab-harness': 'recent_failures', 'host-harness': 'recent_failures' } })
   })
   test('three failed Codex attempts skip Codex on the fourth spawn and the spawn is refused', async () => {
     const logTail: unknown[] = []
@@ -2334,58 +2335,29 @@ describe('harness executor', () => {
     expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(3)
     expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, skipped: { codex: 'recent_failures' } })
   })
-  test('without a router base URL the harness rows are skipped as not_installed and no child runs', async () => {
-    const w = world({})
-    expect(text(await w.agent())).toContain('[routed: codex luna xhigh')
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(0)
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex', skipped: { 'homelab-harness': 'not_installed', 'host-harness': 'not_installed' } })
-  })
-  test('a harness run that fails 30 s or more after it started skips the remaining harness row', async () => {
-    const w = world({ env: gateways, harnessExit: 7, harnessElapsedMs: 30_000 })
-    expect(text(await w.agent())).toContain('[routed: codex luna xhigh')
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(1)
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex', skipped: { 'homelab-harness': 'failed', 'host-harness': 'failed' } })
-  })
   test('every child CLI runs with the current profile ahead of the PATH the session started with', async () => {
-    const w = world({ quotaUrl: null, codexQuota: 'codex-quota: available {"p":40,"s":null}', env: { ...gateways, USER: 'u', PATH: '/nix/store/stale-launchers/bin:/usr/bin' }, harnessExit: 7 })
+    const w = world({ quotaUrl: null, codexQuota: 'codex-quota: available {"p":40,"s":null}', env: { ...gateways, USER: 'u', PATH: '/nix/store/stale-launchers/bin:/usr/bin' } })
     await w.agent()
     const current = '/home/test/.local/bin:/etc/profiles/per-user/u/bin:/run/current-system/sw/bin:/nix/store/stale-launchers/bin:/usr/bin'
-    for (const name of ['claude', 'codex', 'codex-quota']) expect(w.calls.filter((c) => c.argv[0] === name).map((c) => c.env?.PATH)).toContain(current)
+    for (const name of ['codex', 'codex-quota']) expect(w.calls.filter((c) => c.argv[0] === name).map((c) => c.env?.PATH)).toContain(current)
   })
   test('a failed codex run logs its first stderr line with token-like runs redacted', async () => {
-    const w = world({ env: gateways, harnessExit: 7, codexExit: 127, codexStderr: 'line 4: /opt/homebrew/bin/codex: No such file or directory\nkey sk-abcdefghijklmnopqrstuvwxyz0123' })
+    const w = world({ env: gateways, codexExit: 127, codexStderr: 'line 4: /opt/homebrew/bin/codex: No such file or directory\nkey sk-abcdefghijklmnopqrstuvwxyz0123' })
     await w.agent()
     expect(w.writes.some((s) => s.includes('codex failure: codex exec exited with code 127 (line 4: /opt/homebrew/bin/codex: No such file or directory)'))).toBe(true)
     expect(w.writes.join('\n')).not.toContain('abcdefghijklmnopqrstuvwxyz0123')
   })
-  test('a failed harness logs the headless result subtype and turn count', async () => {
-    const w = world({ env: gateways, harnessExit: 1, harnessStdout: '{"is_error":true,"subtype":"error_max_turns","num_turns":40}' })
-    await w.agent()
-    expect(w.writes.some((s) => s.includes('harness failure: harness exited with code 1 (error_max_turns, 40 turns)'))).toBe(true)
-  })
-  test('codex and harness children stream through process.spawn, never the ten-minute process.run', async () => {
-    const w = world({ env: gateways, harnessExit: 7 })
+  test('the codex child streams through process.spawn, never the ten-minute process.run', async () => {
+    const w = world({ env: gateways })
     expect(text(await w.agent())).toContain('[routed: codex luna xhigh')
-    expect(w.spawned.map((argv) => argv[0])).toEqual(['claude', 'claude', 'codex'])
+    expect(w.spawned.map((argv) => argv[0])).toEqual(['codex'])
   })
   test('a child still running at the long-run bound is killed and routing goes on', async () => {
     const w = world({ env: gateways, childHangs: true })
     await w.agent()
-    expect(w.writes.some((s) => s.includes('harness failure: harness invocation failed: still running after 1500000 ms'))).toBe(true)
     expect(w.writes.some((s) => s.includes('codex failure: codex exec invocation or output read failed: still running after 1500000 ms'))).toBe(true)
-    expect(w.killed.map((argv) => argv[0])).toEqual(['claude', 'codex'])
-    expect(routeEvents(w).filter((line) => line.event === 'outcome').map(({ executor, end }) => [executor, end])).toEqual([['homelab-harness', 'timeout'], ['codex', 'timeout']])
-  })
-  test('a harness call that throws logs the error text with the failure', async () => {
-    const w = world({ env: gateways, harnessStdout: 'not json' })
-    await w.agent()
-    expect(w.writes.some((s) => /harness failure: harness invocation failed: \S/.test(s))).toBe(true)
-  })
-  test('a harness run that fails fast still tries the next harness row', async () => {
-    const w = world({ env: gateways, harnessExit: 7 })
-    expect(text(await w.agent())).toContain('[routed: codex luna xhigh')
-    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toHaveLength(2)
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex' })
+    expect(w.killed.map((argv) => argv[0])).toEqual(['codex'])
+    expect(routeEvents(w).filter((line) => line.event === 'outcome').map(({ executor, end }) => [executor, end])).toEqual([['codex', 'timeout']])
   })
 })
 describe('paid rows and router-chat', () => {
@@ -2409,13 +2381,13 @@ describe('paid rows and router-chat', () => {
     expect(validRow({ ...chat, billing: 'metered' })).toBeUndefined()
     expect(validRow({ ...chat, model: undefined })).toBeUndefined()
     expect(validRow({ ...chat, private_ok: true })).toBeUndefined()
-    expect(validRow({ ...EXECUTOR_TABLE[2], billing: 'paid' })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], billing: 'paid' })).toBeUndefined()
   })
   test('validation: only a router-chat row may be paid, even with every paid field set', () => {
     const paid = { billing: 'paid', budget_daily_usd: 5, budget_key: 'agent-chat', private_ok: false }
-    expect(validRow({ ...EXECUTOR_TABLE[2], ...paid })).toBeUndefined()
-    expect(validRow({ ...EXECUTOR_TABLE[2], ...paid, trust: 'sandbox-public' })).toBeUndefined()
-    expect(validRow({ ...EXECUTOR_TABLE[2], ...paid })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], ...paid })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], ...paid, trust: 'sandbox-public' })).toBeUndefined()
+    expect(validRow({ ...EXECUTOR_TABLE[0], ...paid })).toBeUndefined()
     expect(validRow({ ...chat, ...paid })).toBeTruthy()
   })
   test('validation: a paid row is sandbox-public and never a promotion', () => {
@@ -2463,7 +2435,7 @@ describe('paid rows and router-chat', () => {
     expect([...budgetsFromMetrics([budget('agent-chat', '5', 61), budget('agent-chat', '5', 60)], ['agent-chat'], 1000)]).toEqual([['agent-chat', 5]])
   })
   test('eligibility on public work: a paid row with unknown or spent budget is skipped with its reason', () => {
-    const rows = [EXECUTOR_TABLE[5], chat as never]
+    const rows = [EXECUTOR_TABLE[3], chat as never]
     expect(eligibleRows(rows, true, 0, new Map()).skipped).toEqual({ 'chat-paid': 'budget_unknown' })
     expect(eligibleRows(rows, true, 0, new Map([['agent-chat', 0]])).skipped).toEqual({ 'chat-paid': 'budget_spent' })
     expect(eligibleRows(rows, true, 0, new Map([['agent-chat', 0.5]])).rows.map((r) => r.id)).toEqual(['codex', 'chat-paid'])
@@ -2496,7 +2468,7 @@ describe('paid rows and router-chat', () => {
     expect(text(r)).toContain('[routed: router-chat local-only]')
     const sent = w.fetches.filter((f) => f.url === 'http://localhost:8000/v1/chat/completions' && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f)).map((f) => JSON.parse(f.body!).model)
     expect(sent).toEqual(['small', 'local-only'])
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'chat-flat', fell_through_from: ['local small', 'homelab-harness', 'host-harness'] })
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'chat-flat', fell_through_from: ['local small'] })
   })
   test('a router-chat row never re-sends the prompt to the alias the local rung just failed', async () => {
     const w = world({ quota: 1, env: localDown, gatewayStatus: noLocal, files: { [OVERRIDE]: JSON.stringify([{ ...flat, model: 'small' }]) } })
@@ -2539,11 +2511,11 @@ describe('routed attempt outcomes', () => {
   })
 
   test('three failures in the last hour skip for 30 minutes after the newest one', () => {
-    const outcomes = attemptHistory(lines([ended('host-harness', 'failed', NOW - 30 * MIN), ended('host-harness', 'timeout', NOW - 20 * MIN),
-      ended('host-harness', 'failed', NOW - 10 * MIN)]), NOW)
-    expect(recentAttemptFailures(outcomes, 'host-harness', NOW)).toBe(true)
-    expect(recentAttemptFailures(outcomes, 'host-harness', NOW + 20 * MIN - 1)).toBe(true)
-    expect(recentAttemptFailures(outcomes, 'host-harness', NOW + 20 * MIN)).toBe(false)
+    const outcomes = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN), ended('routed-worker', 'timeout', NOW - 20 * MIN),
+      ended('routed-worker', 'failed', NOW - 10 * MIN)]), NOW)
+    expect(recentAttemptFailures(outcomes, 'routed-worker', NOW)).toBe(true)
+    expect(recentAttemptFailures(outcomes, 'routed-worker', NOW + 20 * MIN - 1)).toBe(true)
+    expect(recentAttemptFailures(outcomes, 'routed-worker', NOW + 20 * MIN)).toBe(false)
   })
 
   test('failures older than an hour do not count and a newer success clears the skip', () => {
@@ -2555,13 +2527,13 @@ describe('routed attempt outcomes', () => {
     expect(recentAttemptFailures(cleared, 'codex', NOW)).toBe(false)
   })
 
-  test('a logged harness outcome contains no prompt or answer text', async () => {
+  test('a logged Codex outcome contains no prompt or answer text', async () => {
     const prompt = 'PRIVATE_PROMPT_TEXT'
     const answer = 'PRIVATE_ANSWER_TEXT'
-    const w = world({ env: gateways, harnessAnswer: answer })
+    const w = world({ env: gateways, answer })
     expect(text(await w.agent({ description: '[class: standard] PRIVATE_DESCRIPTION_TEXT', prompt }))).toContain(answer)
     const outcomes = routeEvents(w).filter((line) => line.event === 'outcome')
-    expect(outcomes).toEqual([{ ts_ms: 1_000_000, event: 'outcome', executor: 'homelab-harness', end: 'ok', ended_ms: 1_000_000 }])
+    expect(outcomes).toEqual([{ ts_ms: 1_000_000, event: 'outcome', executor: 'codex', end: 'ok', ended_ms: 1_000_000 }])
     expect(JSON.stringify(outcomes)).not.toContain(prompt)
     expect(JSON.stringify(outcomes)).not.toContain(answer)
     expect(JSON.stringify(outcomes)).not.toContain('PRIVATE_DESCRIPTION_TEXT')

@@ -25,3 +25,6 @@ Verified API behavior for the incident and task trackers.
 ## Vikunja
 
 - Task creation uses `PUT`, not `POST`.
+- Task update (`POST /tasks/<id>`) replaces the whole task. A field you leave out is written empty or zero, so
+  `{"done": true}` alone wipes the description and priority. `GET` the task, change the fields, `POST` the full
+  object back, then read it back.

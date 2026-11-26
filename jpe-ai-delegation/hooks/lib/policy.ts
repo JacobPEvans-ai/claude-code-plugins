@@ -173,8 +173,8 @@ export function newestModel(cacheText: string, family: string): string | undefin
   return found[0]?.slug
 }
 
-// One wall-clock budget shared by both routed children, a `codex exec` and a headless harness child: measured local
-// coding runs ran up to 1,192 s, so a routed task gets 25 minutes.
+// One wall-clock budget for the routed `codex exec` child: measured local coding runs ran up to 1,192 s, so a routed
+// task gets 25 minutes.
 export const ROUTED_CHILD_TIMEOUT_MS = 1_500_000
 
 // The only way to build a `codex exec` command. Reject mismatched families and unsupported efforts;
@@ -189,21 +189,6 @@ export function codexArgv(sandbox: Sandbox, route: Route, model: string | undefi
   return ['codex', 'exec', '-s', sandbox, '-c', `model_reasoning_effort="${effort}"`, '--skip-git-repo-check', '-m', model, '-o', outputFile, '-']
 }
 
-// The only way to run one headless harness child. Both spawns get a sandboxed shell, because the child has no
-// search tools of its own. The read-only spawn may read but never change `tree`, the directory it runs in: it has no
-// edit tools and its sandbox denies writes there. The write-capable spawn accepts edits under the child's own sandbox
-// settings. The prompt goes on stdin, never as an argument; the model and context window reach the child through its
-// environment, not the command line.
-export function harnessArgv(sandbox: Sandbox, tree?: string): string[] {
-  if (sandbox !== 'read-only' && sandbox !== 'workspace-write') throw new Error(`harness sandbox must be read-only or workspace-write, got ${sandbox}`)
-  const argv = ['claude', '-p', '--max-turns', '100', '--bare', '--exclude-dynamic-system-prompt-sections', '--no-session-persistence', '--output-format', 'json', '--permission-mode', sandbox === 'read-only' ? 'dontAsk' : 'acceptEdits']
-  if (sandbox === 'read-only') {
-    if (!tree?.startsWith('/')) throw new Error('a read-only harness needs the absolute directory it runs in')
-    return [...argv, '--tools', 'Bash,Read', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true, filesystem: { denyWrite: [tree] } } })]
-  }
-  return [...argv, '--tools', 'Bash,Read,Edit,Write,Grep,Glob', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true } })]
-}
-
 // Subscription executors as data, in static order; no Claude rung sits outside this table. Rows may be
 // overridden or added by id from an operator file; `mergeExecutorRows` validates every row.
 export type Executor = string
@@ -214,11 +199,9 @@ export type Peak = { days: number[]; start_utc: number; end_utc: number; multipl
 // documents the key's own daily cap; the hook does not compare it.
 export type ExecutorRow = {
   id: Executor
-  transport: 'codex' | 'sandbox' | 'router-chat' | 'harness'
+  transport: 'codex' | 'sandbox' | 'router-chat'
   tool?: string
   model?: string
-  // Harness rows only: the context window in tokens the headless child is told to assume.
-  window?: number
   billing?: 'paid'
   budget_daily_usd?: number
   budget_key?: string
@@ -230,12 +213,8 @@ export type ExecutorRow = {
   kind?: 'promotion'
   expires?: string
 }
-// Sandbox tools run on a dispatcher that refuses private repositories, so a sandbox row never takes private work; a
-// `harness` row runs the Claude Code CLI headless as a child on the on-host router, so like Codex it is
-// subscription-trusted and may take private work. Among harness rows the table order is the rank order.
+// Codex is subscription-trusted and may take private work: its runs execute on the operator's own host.
 export const EXECUTOR_TABLE: readonly ExecutorRow[] = [
-  { id: 'homelab-harness', transport: 'harness', model: 'medium-homelab', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 },
-  { id: 'host-harness', transport: 'harness', model: 'medium', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 },
   { id: 'qwen', transport: 'sandbox', tool: 'opencode-qwen', trust: 'sandbox-public', private_ok: false, price: 0.5 },
   { id: 'zcode', transport: 'sandbox', tool: 'zcode', trust: 'sandbox-public', private_ok: false, price: 1, peak: [{ days: [1, 2, 3, 4, 5], start_utc: 6, end_utc: 10, multiplier: 2 }] },
   { id: 'opencode-go', transport: 'sandbox', tool: 'opencode', trust: 'sandbox-public', private_ok: false, price: 1 },
@@ -253,13 +232,9 @@ const isPeak = (p: unknown): p is Peak => {
 export function validRow(r: unknown): ExecutorRow | undefined {
   const v = r as ExecutorRow
   if (!v || typeof v.id !== 'string' || !/^[a-z0-9-]{1,40}$/.test(v.id) || (CLAUDE_MODEL_NAMES as readonly string[]).includes(v.id)) return undefined
-  if (v.transport !== 'codex' && v.transport !== 'sandbox' && v.transport !== 'router-chat' && v.transport !== 'harness') return undefined
+  if (v.transport !== 'codex' && v.transport !== 'sandbox' && v.transport !== 'router-chat') return undefined
   if (v.transport === 'sandbox' && (typeof v.tool !== 'string' || !/^[a-z0-9-]{1,40}$/.test(v.tool))) return undefined
   if (v.transport === 'router-chat' && (typeof v.model !== 'string' || !/^[A-Za-z0-9._:/-]{1,80}$/.test(v.model))) return undefined
-  // A harness row names an on-host role alias; a `*-homelab` alias is allowed because the on-host router forwards those
-  // under a key that can only reach local, zero-retention models. Its window is the child's assumed context size.
-  if (v.transport === 'harness' && (typeof v.model !== 'string' || !/^[a-z0-9-]{1,40}$/.test(v.model))) return undefined
-  if (v.transport === 'harness' && (typeof v.window !== 'number' || !Number.isInteger(v.window) || v.window < 16000 || v.window > 2000000)) return undefined
   if (forbiddenRowModel(v.model)) return undefined
   if (v.billing !== undefined && v.billing !== 'paid') return undefined
   if (v.billing === 'paid' && (v.transport !== 'router-chat' || typeof v.budget_daily_usd !== 'number' ||
@@ -347,7 +322,7 @@ export function jobHistory(lines: readonly string[], nowMs: number): { pending: 
 export type AttemptEnd = 'ok' | 'failed' | 'timeout'
 export type AttemptOutcome = { executor: Executor; end: AttemptEnd; ts_ms: number; ended_ms: number }
 const ATTEMPT_ENDS: readonly AttemptEnd[] = ['ok', 'failed', 'timeout']
-// From decision-log lines: one outcome per completed harness or Codex attempt, across repositories. Lines with invalid
+// From decision-log lines: one outcome per completed Codex attempt, across repositories. Lines with invalid
 // executor IDs, ends, timestamps, or stamps more than a minute in the future are ignored.
 export function attemptHistory(lines: readonly string[], nowMs: number): AttemptOutcome[] {
   const outcomes: AttemptOutcome[] = []
@@ -407,7 +382,7 @@ export function peakMultiplier(row: ExecutorRow, nowMs: number): number {
 }
 
 // On-host router aliases only, smallest first; `*-homelab` aliases leave the host and are never used by this text
-// rung. (A harness executor row may name a `*-homelab` alias; that row is not this rung.)
+// rung.
 export const LOCAL_ALIASES = [{ alias: 'small', timeoutMs: 60_000 }, { alias: 'local-only', timeoutMs: 120_000 }] as const
 // The two utility calls that never spend the Codex subscription: label classification on the smallest alias and the
 // permission judge on `medium`, both on the same on-host chat endpoint the local rung uses.
@@ -559,11 +534,10 @@ export function parseCodexQuota(stdout: string, threshold: number): CodexQuotaRe
   }
 }
 
-// Harness rows first, ahead of every row of any other transport whatever the quotas say (a harness row has no quota,
-// so it is never exhausted and never skipped for an unknown one), in table order; then promotions; then usage pace,
-// exhausted rows skipped. At/below-line readings by distance (furthest under first), unknown in table order, then
-// over-line readings (least over first); use each executor's smallest distance across windows. Pace line:
-// 0 at start, 100 one day before reset (at reset for <2-day windows); effective score is route-line telemetry only.
+// Promotions first; then usage pace, exhausted rows skipped. At/below-line readings by distance (furthest under
+// first), unknown in table order, then over-line readings (least over first); use each executor's smallest distance
+// across windows. Pace line: 0 at start, 100 one day before reset (at reset for <2-day windows); effective score is
+// route-line telemetry only.
 export function rankRows(rows: readonly ExecutorRow[], scores: Partial<Record<Executor, Score>>, nowMs: number): { order: Executor[]; skipped: Record<Executor, SkipReason>; effective: Record<Executor, number | null> } {
   const skipped: Record<Executor, SkipReason> = {}
   const effective: Record<Executor, number | null> = {}
@@ -574,10 +548,8 @@ export function rankRows(rows: readonly ExecutorRow[], scores: Partial<Record<Ex
     effective[r.id] = s === undefined ? null : s / (Math.max(r.price, 0.01) * peakMultiplier(r, nowMs))
     return true
   })
-  const harness = open.filter((r) => r.transport === 'harness')
-  const others = open.filter((r) => r.transport !== 'harness')
-  const promos = others.filter((r) => r.kind === 'promotion')
-  const regular = others.filter((r) => r.kind !== 'promotion')
+  const promos = open.filter((r) => r.kind === 'promotion')
+  const regular = open.filter((r) => r.kind !== 'promotion')
   const tableIndex = new Map(rows.map((r, index) => [r.id, index]))
   const orderByPace = (group: ExecutorRow[]): ExecutorRow[] => {
     const distance = (r: ExecutorRow): number | undefined => {
@@ -590,5 +562,5 @@ export function rankRows(rows: readonly ExecutorRow[], scores: Partial<Record<Ex
     const over = group.filter((r) => distance(r) !== undefined && distance(r)! < 0).sort(compareDistance)
     return [...under, ...unknown, ...over]
   }
-  return { order: [...harness, ...orderByPace(promos), ...orderByPace(regular)].map((r) => r.id), skipped, effective }
+  return { order: [...orderByPace(promos), ...orderByPace(regular)].map((r) => r.id), skipped, effective }
 }

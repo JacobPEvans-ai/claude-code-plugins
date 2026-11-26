@@ -46,12 +46,20 @@ printf '%s\n' "$INSTRUCTION" "$INPUT" | fast-subagent.sh
 `fast-subagent.sh` lives in this skill's `scripts/` directory (resolve it
 relative to this file; it needs only `bash`, `curl`, `jq`). It reads the
 endpoint from the environment — `LLM_ROUTER_URL` + `LLM_ROUTER_TOKEN_FILE`, or
-the local proxy's `OPENAI_API_BASE_URL` + `LITELLM_LOCAL_KEY` — sends one
-bounded request for role `small`, prints the answer on stdout and
-`model=<what answered> fallbacks=<n>` on stderr.
+the local proxy's `OPENAI_API_BASE_URL` / `LITELLM_LOCAL_BASE_URL` +
+`LITELLM_LOCAL_KEY` — sends one bounded request for role `small`, prints the
+answer on stdout and `model=<what answered> fallbacks=<n>` on stderr.
 
-Options: `--model medium` (a capability name), `--system TEXT`, `--max-tokens N`,
-`--timeout SEC`, `--raw` (full JSON), `--release` (see §4).
+Options: `--model medium` (a capability name), `--system TEXT`,
+`--prefix-file FILE` (shared leading text or saved JSON `messages` array),
+`--save-chain FILE` (persist `messages` + reply for chained KV cache reuse),
+`--session-id ID` (pin LiteLLM `session_affinity` to the warm slot),
+`--max-tokens N`, `--timeout SEC`, `--raw` (full JSON), `--release` (see §4).
+
+When chaining specialist steps over the same evidence on a local backend, keep
+the leading prefix byte-identical across calls with `--prefix-file` +
+`--save-chain` + `--session-id` so every follow-up appends only its task suffix
+and hits the warm KV cache slot.
 
 Write the prompt for a small model — short imperatives, an explicit output
 shape, a row cap, a hard STOP:

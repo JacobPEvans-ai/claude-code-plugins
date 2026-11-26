@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Claude Code plugins and hooks by JacobPEvans",
-    "version": "6.78.0"
+    "version": "6.80.0"
   },
   "plugins": [
     {
@@ -22,7 +22,7 @@
       "name": "ai-delegation",
       "source": "./ai-delegation",
       "description": "Delegate tasks to AI models, orchestrate premium-model work, and run autonomous maintenance loops",
-      "version": "6.18.0",
+      "version": "6.19.0",
       "author": {
         "name": "JacobPEvans"
       }
@@ -67,7 +67,7 @@
       "name": "ai-cli-harness-better-practices",
       "source": "./ai-cli-harness-better-practices",
       "description": "Harness-agnostic session continuity: goal statements, status snapshots, cold resume, replanning, and wrap-up. No git or GitHub required.",
-      "version": "4.33.0",
+      "version": "4.33.1",
       "author": {
         "name": "JacobPEvans"
       }
@@ -112,7 +112,7 @@
       "name": "jpe-ai-delegation",
       "source": "./jpe-ai-delegation",
       "description": "Specific to the maintainer's own setup and not intended for general use",
-      "version": "1.32.0",
+      "version": "1.33.0",
       "author": {
         "name": "JacobPEvans"
       }

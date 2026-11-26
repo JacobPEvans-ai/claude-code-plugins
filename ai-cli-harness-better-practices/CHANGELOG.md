@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.33.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/ai-cli-harness-better-practices-v4.33.0...ai-cli-harness-better-practices-v4.33.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **ai-cli-harness-better-practices:** warn that a Vikunja task update replaces the whole task ([#912](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/912)) ([b9a0247](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/b9a02478d2b1896bf8b08efe118d6b1a32757b03))
+
 ## [4.33.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/ai-cli-harness-better-practices-v4.32.0...ai-cli-harness-better-practices-v4.33.0) (2026-11-22)
 
 
