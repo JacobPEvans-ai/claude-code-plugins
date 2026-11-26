@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.36.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.35.0...jpe-ai-delegation-v1.36.0) (2026-11-26)
+
+
+### Features
+
+* **jpe-ai-delegation:** headless harness limited to non-Claude models, with MCP agents ([#931](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/931)) ([0682810](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/06828101b4a0294789708a8fddd66071108d59a5))
+
 ## [1.35.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.34.0...jpe-ai-delegation-v1.35.0) (2026-11-26)
 
 
