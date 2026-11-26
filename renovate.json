@@ -15,5 +15,19 @@
         "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\n\\s*(?:- |go install )github\\.com/[^@]+@(?<currentValue>v[0-9.]+)"
       ]
     }
+  ],
+  "packageRules": [
+    {
+      "description": "hook-runtime-py39 imports the hooks under the macOS system Python 3.9, and setup-python publishes 3.9 only up to ubuntu-24.04: never move that job's Python or runner.",
+      "matchFileNames": [
+        ".github/workflows/validate-plugin.yml"
+      ],
+      "matchDepNames": [
+        "python",
+        "ubuntu"
+      ],
+      "matchCurrentVersion": "/^(3\\.9|24\\.04)$/",
+      "enabled": false
+    }
   ]
 }
