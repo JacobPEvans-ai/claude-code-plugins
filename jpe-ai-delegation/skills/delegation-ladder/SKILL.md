@@ -144,7 +144,7 @@ ended jobs there ended `no_commit`, `timeout`, `rate_limited` or `refused`. The
 skip lasts 60 minutes after the newest failure's `ended_ms`, or until the end of
 that UTC hour when it is `rate_limited`. Status reads on a failed start stop
 after 15 seconds.
-Harness and Codex attempts also write one `outcome` line with `executor`, `end`
+Codex attempts also write one `outcome` line with `executor`, `end`
 (`ok`, `failed` or `timeout`) and `ended_ms`; prompt and answer text are never logged there.
 Across repositories, three failures or timeouts in 60 minutes with no newer success skip an executor for 30 minutes after its newest failure.
 The hook never merges. Leak-scan the exact PR head before any human merge.
