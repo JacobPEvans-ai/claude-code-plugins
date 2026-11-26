@@ -291,8 +291,10 @@ describe('policy', () => {
     })
   }
   test('command builder rejects any non-Luna family, unsupported efforts and missing output', () => {
-    for (const effort of ['', 'ultra', 'high', 'medium', 'max']) expect(() => codexArgv('read-only', { family: 'luna', effort }, 'gpt-luna', '/tmp/out')).toThrow()
-    for (const model of [undefined, '', 'gpt-sol', 'gpt-luna-mini']) expect(() => codexArgv('read-only', CODEX.bulk, model, '/tmp/out')).toThrow()
+    for (const effort of ['', 'ultra', 'high', 'medium', 'max'])
+      expect(() => codexArgv('read-only', { family: 'luna', effort }, 'gpt-luna', '/tmp/out')).toThrow()
+    for (const model of [undefined, '', 'gpt-sol', 'gpt-luna-mini'])
+      expect(() => codexArgv('read-only', CODEX.bulk, model, '/tmp/out')).toThrow()
     expect(() => codexArgv('read-only', { family: 'terra', effort: 'high' } as never, 'gpt-terra', '/tmp/out')).toThrow()
     expect(() => codexArgv('read-only', CODEX.bulk, 'gpt-terra', '/tmp/out')).toThrow()
     expect(() => codexArgv('read-only', CODEX.bulk, 'gpt-luna', '')).toThrow()
@@ -349,6 +351,12 @@ describe('policy', () => {
     // Delegated work never runs headless Claude Code, so no harness builder remains and the only child argv is codex.
     expect(Object.keys(policy)).not.toContain('harnessArgv')
     expect(codexArgv('read-only', CODEX.standard, 'gpt-luna', '/tmp/out')[0]).toBe('codex')
+    expect(EXECUTOR_TABLE[0].transport).toBe('sandbox')
+    expect(EXECUTOR_TABLE.length).toBeGreaterThan(1)
+    expect(EXECUTOR_TABLE.every((r) => r.transport !== 'harness')).toBe(true)
+    expect(EXECUTOR_TABLE.map((r) => r.id)).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
+    expect(EXECUTOR_TABLE.filter((r) => r.transport === 'harness')).toEqual([])
+    expect(Object.keys(policy)).toContain('codexArgv')
   })
   test('row validation rejects a harness transport, merged or unknown, without dropping valid rows', () => {
     const harnessRow = { id: 'host-harness', transport: 'harness', model: 'medium', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 }
@@ -827,7 +835,8 @@ describe('model and payload guards', () => {
       'api_key: $TOKEN_ENV',
       'secret-key: ${SECRET_REFERENCE}',
       'password: <configured-role>',
-    ]) expect(safePayload(payload)).toBe(true)
+    ])
+      expect(safePayload(payload)).toBe(true)
     // Built at runtime so the secret scanner does not read a credential-shaped literal.
     const mixed = ['abc', 'defghijklmnop', 'QRSTUVWX', '123456'].join('')
     for (const payload of [
@@ -838,7 +847,8 @@ describe('model and payload guards', () => {
       'token: service-writer-role',
       'password: correcthorse',
       'token=writer',
-    ]) expect(safePayload(payload)).toBe(false)
+    ])
+      expect(safePayload(payload)).toBe(false)
   })
   test('permission levels and environment references pass the payload scan; their token words keep the brief off the sandbox rows', async () => {
     const w = world({ quota: 1, env: gateways })
@@ -858,8 +868,10 @@ describe('model and payload guards', () => {
       } })
       const r = await w.agent({ subagent_type: 'codeql-resolver:codeql-permissions-auditor' })
       expect(text(r)).toContain(model !== 'sonnet' ? 'codex luna xhigh' : 'subagents are forbidden')
-      if (model !== 'sonnet') expect(runs(w)[0].stdin).toContain('Follow the plugin review rubric.')
-      else expect(work(w)).toEqual([])
+      if (model !== 'sonnet')
+        expect(runs(w)[0].stdin).toContain('Follow the plugin review rubric.')
+      else
+        expect(work(w)).toEqual([])
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -1173,6 +1185,10 @@ describe('network work', () => {
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(w.quotaFetches).toEqual([])
     expect(w.fetches).toEqual([])
+    expect(text(await w.agent(call))).toBe(networkRefusedText)
+    expect(w.calls.filter((c) => c.argv[0] === 'codex')).toEqual([])
+    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toEqual([])
+    expect(w.submitted).toEqual([])
   })
   test('a prompt-head [needs: network] tag is refused alike', async () => {
     const spawn = { description: 'review request', prompt: '[needs: network] Merge the green PRs.' }
@@ -1331,7 +1347,8 @@ describe('untagged kind classification', () => {
       const w = world({ quota: 1, ...options })
       expect(text(await w.agent({ description: undefined }))).toBe(baselineResult)
       expect(routeEvents(w).at(-1)).toEqual(baselineEvent)
-      if (line) expect(w.writes).toContain(line)
+      if (line)
+        expect(w.writes).toContain(line)
       expect(JSON.stringify(w.writes)).not.toContain('Implement the change.')
     }
   })
@@ -1477,7 +1494,8 @@ describe('judge and session policy', () => {
       const policy = r.sections[0].text
       expect(policy).not.toContain('Check codex-quota first')
       expect(policy).toStartWith(`codex-quota: ${status}\nThe jpe-ai-delegation hook places every Agent spawn.`)
-      for (const fragment of ['Tag self-contained text work [class: text]', 'put all of its text in the prompt', 'on-host local model first', 'ranked by usage pace', 'non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository', 'ready PR', 'leak-scan it before merge', 'never auto-merge', 'Codex runs Luna at xhigh, the only Codex model and effort', 'Delegation routing', 'Tag work that needs network or GitHub writes [needs: network]', 'There is no Claude rung', 'no Agent spawn ever runs on a Claude model', 'is refused, not run in the session', 'Never Sonnet, Opus or Fable subagents', 'Never send secrets, credentials, inventory or incident content to any executor', 'Antigravity stays a second-opinion reviewer']) expect(policy).toContain(fragment)
+      for (const fragment of ['Tag self-contained text work [class: text]', 'put all of its text in the prompt', 'on-host local model first', 'ranked by usage pace', 'non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository', 'ready PR', 'leak-scan it before merge', 'never auto-merge', 'Codex runs Luna at xhigh, the only Codex model and effort', 'Delegation routing', 'Tag work that needs network or GitHub writes [needs: network]', 'There is no Claude rung', 'no Agent spawn ever runs on a Claude model', 'is refused, not run in the session', 'Never Sonnet, Opus or Fable subagents', 'Never send secrets, credentials, inventory or incident content to any executor', 'Antigravity stays a second-opinion reviewer'])
+        expect(policy).toContain(fragment)
     })
   }
 })
@@ -1602,7 +1620,8 @@ describe('usage pace ranking', () => {
     const event = routeEvents(w).at(-1)
     expect(event.eligible).toEqual(EXECUTOR_TABLE.map((row) => row.id))
     expect(event.chosen).toBe(EXECUTOR_TABLE[0].id)
-    for (const row of EXECUTOR_TABLE) expect(event.scores[row.id]).toMatchObject({ used: null, line: null })
+    for (const row of EXECUTOR_TABLE)
+      expect(event.scores[row.id]).toMatchObject({ used: null, line: null })
   })
   test('no readings keep table order only without promotions: an appended promotion ranks first', () => {
     const promotion = { id: 'promo-free', transport: 'sandbox', tool: 'opencode-free', trust: 'sandbox-public', private_ok: false, price: 0, kind: 'promotion', expires: '2030-01-01T00:00:00Z' }
@@ -1670,8 +1689,10 @@ describe('routing batch', () => {
     })
   }
   test('credentialBrief matches credential words only, and mandatoryLabel still labels router work', () => {
-    for (const t of ['auth', 'authentication', 'secrets', 'credential', 'tokens', 'password', 'keys']) expect(credentialBrief(`the ${t} change`)).toBe(true)
-    for (const t of ['router', 'routing', 'memory', 'clusters', 'keyboard', 'monkey']) expect(credentialBrief(`the ${t} change`)).toBe(false)
+    for (const t of ['auth', 'authentication', 'secrets', 'credential', 'tokens', 'password', 'keys'])
+      expect(credentialBrief(`the ${t} change`)).toBe(true)
+    for (const t of ['router', 'routing', 'memory', 'clusters', 'keyboard', 'monkey'])
+      expect(credentialBrief(`the ${t} change`)).toBe(false)
     expect(mandatoryLabel('router work')).toBe('bulk-complex')
   })
   test('6: with Qwen and ZCode disabled, public-repo code takes OpenCode Go', async () => {
@@ -1704,7 +1725,8 @@ describe('routing batch', () => {
       const r = await w.agent(call)
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
       expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
-      if (quota === 0) expect(text(r)).toContain('codex luna xhigh, class bulk-complex')
+      if (quota === 0)
+        expect(text(r)).toContain('codex luna xhigh, class bulk-complex')
       else {
         expect(text(r)).toBe(refusedText)
         expect(w.nextCalls).toEqual([])
@@ -1861,7 +1883,8 @@ describe('quota from the metrics store', () => {
       const w = world({ ...options, env: gateways, cursorWindows: [{ used_percent: 10, window_seconds: 2000, reset_at: 2000 }] })
       await w.agent(coding)
       const { scores } = routeEvents(w).at(-1)
-      for (const id of ids) expect(scores[id]).toMatchObject({ used: null, line: null })
+      for (const id of ids)
+        expect(scores[id]).toMatchObject({ used: null, line: null })
     }
     const full = world({ quota: 1, env: gateways })
     await full.agent()
@@ -2109,7 +2132,8 @@ describe('executor table', () => {
   test('validation: only subscription-trusted rows may take private work; ids and promotions are strict', () => {
     expect(validRow({ ...EXECUTOR_TABLE[2], private_ok: true })).toBeUndefined()
     expect(validRow({ ...EXECUTOR_TABLE[2], trust: 'untrusted-api' })).toBeUndefined()
-    for (const id of CLAUDE_MODEL_NAMES) expect(validRow({ ...EXECUTOR_TABLE[2], id })).toBeUndefined()
+    for (const id of CLAUDE_MODEL_NAMES)
+      expect(validRow({ ...EXECUTOR_TABLE[2], id })).toBeUndefined()
     expect(validRow({ ...EXECUTOR_TABLE[2], id: 'Bad Id' })).toBeUndefined()
     expect(validRow({ ...EXECUTOR_TABLE[2], tool: undefined })).toBeUndefined()
     expect(validRow({ ...promo })).toBeUndefined()
@@ -2183,6 +2207,11 @@ describe('executor table', () => {
     expect(text(await w.agent(coding))).toContain('[routed: Qwen sandbox;')
     expect(w.calls.some((c) => c.stdin === 'executor override rows rejected: ghost-harness\n')).toBe(true)
     expect(routeEvents(w).at(-1).eligible).not.toContain('ghost-harness')
+    expect(routeEvents(w).at(-1).eligible).toEqual(EXECUTOR_TABLE.map((r) => r.id))
+    expect(routeEvents(w).at(-1).chosen).toBe('qwen')
+    expect(w.calls.filter((c) => c.argv[0] === 'claude')).toEqual([])
+    expect(w.calls.filter((c) => c.argv[0] === 'codex')).toEqual([])
+    expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
   })
   test('an override cannot open a sandbox row to private work', async () => {
     const w = world({ quota: 1, env: gateways, repository: { visibility: 'private', private: true }, files: { [OVERRIDE]: JSON.stringify([{ id: 'zcode', private_ok: true }]) } })
@@ -2215,7 +2244,8 @@ describe('executor table', () => {
       const event = routeEvents(w).at(-1)
       expect(event.chosen).toBe('stopped')
       expect(event.reason).toBe(NO_EXECUTOR_REASON)
-      for (const id of event.eligible) expect(['exhausted', 'failed', 'expired', 'not_installed']).toContain(event.skipped[id])
+      for (const id of event.eligible)
+        expect(['exhausted', 'failed', 'expired', 'not_installed']).toContain(event.skipped[id])
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -2298,7 +2328,8 @@ describe('routed children', () => {
     const w = world({ quotaUrl: null, codexQuota: 'codex-quota: available {"p":40,"s":null}', env: { ...gateways, USER: 'u', PATH: '/nix/store/stale-launchers/bin:/usr/bin' } })
     await w.agent()
     const current = '/home/test/.local/bin:/etc/profiles/per-user/u/bin:/run/current-system/sw/bin:/nix/store/stale-launchers/bin:/usr/bin'
-    for (const name of ['codex', 'codex-quota']) expect(w.calls.filter((c) => c.argv[0] === name).map((c) => c.env?.PATH)).toContain(current)
+    for (const name of ['codex', 'codex-quota'])
+      expect(w.calls.filter((c) => c.argv[0] === name).map((c) => c.env?.PATH)).toContain(current)
   })
   test('a failed codex run logs its first stderr line with token-like runs redacted', async () => {
     const w = world({ env: gateways, codexExit: 127, codexStderr: 'line 4: /opt/homebrew/bin/codex: No such file or directory\nkey sk-abcdefghijklmnopqrstuvwxyz0123' })
@@ -2384,7 +2415,8 @@ describe('paid rows and router-chat', () => {
   test('validation: an unpaid router-chat row must use an on-host alias', () => {
     expect(validRow({ ...flat })).toBeTruthy()
     expect(validRow({ ...flat, model: 'small' })).toBeTruthy()
-    for (const model of ['local-only-homelab', 'small-homelab', 'metered-model', 'paid-chat']) expect(validRow({ ...flat, model })).toBeUndefined()
+    for (const model of ['local-only-homelab', 'small-homelab', 'metered-model', 'paid-chat'])
+      expect(validRow({ ...flat, model })).toBeUndefined()
     expect(validRow({ ...flat, trust: 'sandbox-public' })).toBeUndefined()
     // An override cannot retarget a built-in row to router-chat on a metered model.
     expect(mergeExecutorRows(EXECUTOR_TABLE, [{ id: 'codex', transport: 'router-chat', model: 'metered-model' }]).rejected).toEqual(['codex'])
@@ -2537,7 +2569,8 @@ describe('sandbox job outcomes', () => {
   test('job state accepts only the contract ends and a non-negative duration', () => {
     expect(jobState({ end: 'no_commit', duration: 30 })).toEqual({ end: 'no_commit', duration_ms: 30_000 })
     expect(jobState({ end: 'timeout', duration: -1 })).toEqual({ end: 'timeout' })
-    for (const status of [{ end: '' }, { end: 'succeeded' }, { state: 'failed' }, null, 'no_commit']) expect(jobState(status)).toBeUndefined()
+    for (const status of [{ end: '' }, { end: 'succeeded' }, { state: 'failed' }, null, 'no_commit'])
+      expect(jobState(status)).toBeUndefined()
   })
   test('the end anchor is start plus duration, never after the observation, else the observation', () => {
     const record = { job: job(1), repo: 'owner/project', executor: 'zcode', started_ms: NOW - 80 * MIN }
