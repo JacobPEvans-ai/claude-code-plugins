@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.35.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.34.0...jpe-ai-delegation-v1.35.0) (2026-11-26)
+
+
+### Features
+
+* **jpe-ai-delegation:** refuse retired agent types from operator config ([#927](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/927)) ([36c2345](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/36c2345945daf282d37b9cc6dcb45c1aa40b1f34))
+
 ## [1.34.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.33.0...jpe-ai-delegation-v1.34.0) (2026-11-26)
 
 
