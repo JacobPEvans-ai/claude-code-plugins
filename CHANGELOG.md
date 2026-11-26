@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.81.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.80.0...v6.81.0) (2026-11-26)
+
+
+### Features
+
+* **jpe-ai-delegation:** add semaphore-converge caller skill ([#915](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/915)) ([ec158bb](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/ec158bb7a0117c4010edcac104e23723bbd0eec2))
+
 ## [6.80.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.79.0...v6.80.0) (2026-11-26)
 
 
