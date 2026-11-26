@@ -1,4 +1,4 @@
-import type { HarnessMcpConfig, HarnessMcpServer, Sandbox } from './policy'
+import type { HarnessMcpServer, Sandbox } from './policy'
 
 export type AgentDefinition = { model?: string; prompt: string; tools?: string[]; disallowedTools?: string[]; egress?: 'network'; mcpServers?: Record<string, HarnessMcpServer> }
 const WRITERS = ['Edit', 'Write', 'NotebookEdit', 'Bash']
@@ -11,14 +11,14 @@ function quotedScalar(raw: string): string {
   return raw.slice(1, -1).replace(/\\(x[\da-fA-F]{2}|u[\da-fA-F]{4}|U[\da-fA-F]{8}|.)/g, (_, escaped: string) => {
     if (/^[xuU]/.test(escaped)) return String.fromCodePoint(parseInt(escaped.slice(1), 16))
     if (!(escaped in escapes)) throw new Error('invalid quoted agent scalar')
-    return escapes[escaped]
+    return escapes[escaped]!
   })
 }
 
 function scalar(raw: string, tool = false): string {
   let value = raw.trim()
   const quoted = value.match(/^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')(?:[ \t]+#.*)?$/)
-  if (quoted) return quotedScalar(quoted[1])
+  if (quoted) return quotedScalar(quoted[1]!)
   value = value.replace(/[ \t]+#.*$/, '').trim()
   if (!value || /^[\[\]{}&*!|>'"`]/.test(value) || (!tool && (/[\[\]{}&*!|>'"`\n\r]/.test(value) || /:\s/.test(value)))) throw new Error('unsupported frontmatter scalar')
   return value
@@ -63,7 +63,7 @@ function toolList(raw: string): string[] {
   if (value.startsWith('[')) {
     const list = value.match(/^\[([\s\S]*)\](?:[ \t]+#.*)?$/)
     if (!list) throw new Error('invalid tool list')
-    const body = list[1].trim().replace(/,\s*$/, '')
+    const body = list[1]!.trim().replace(/,\s*$/, '')
     tools = body ? toolEntries(body).map((entry) => scalar(entry, true)) : []
   } else {
     tools = toolEntries(scalar(value, true))
@@ -179,11 +179,11 @@ function parseMcpServers(lines: string[]): Record<string, HarnessMcpServer> {
   let index = 0
   let listIndent: number | undefined
   while (index < entries.length) {
-    const item = entries[index]
+    const item = entries[index]!
     const listItem = item.content.match(/^-\s+(.+)$/)
     if (!listItem || (listIndent !== undefined && item.indent !== listIndent)) throw new Error('MCP servers must be a list of single-key maps')
     listIndent = item.indent
-    const [rawName, rawConfig] = pair(listItem[1])
+    const [rawName, rawConfig] = pair(listItem[1]!)
     const name = plainString(rawName)
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(name) || Object.prototype.hasOwnProperty.call(servers, name)) throw new Error('invalid or duplicate MCP server name')
     index++
@@ -198,8 +198,8 @@ function parseMcpServers(lines: string[]): Record<string, HarnessMcpServer> {
     } else {
       const fieldIndent = entries[index]?.indent
       if (fieldIndent === undefined || fieldIndent <= listIndent) throw new Error('MCP server map is empty')
-      while (index < entries.length && entries[index].indent > listIndent) {
-        const field = entries[index]
+      while (index < entries.length && entries[index]!.indent > listIndent) {
+        const field = entries[index]!
         if (field.indent !== fieldIndent || field.content.startsWith('-')) throw new Error('invalid MCP server map indentation')
         const [rawKey, rawValue] = pair(field.content)
         const key = plainString(rawKey)
@@ -209,19 +209,19 @@ function parseMcpServers(lines: string[]): Record<string, HarnessMcpServer> {
         if (value) fields.set(key, serverField(key, value))
         else if (key === 'args') {
           const args: string[] = []
-          while (index < entries.length && entries[index].indent > fieldIndent) {
-            const item = entries[index]
+          while (index < entries.length && entries[index]!.indent > fieldIndent) {
+            const item = entries[index]!
             const list = item.content.match(/^-\s+(.+)$/)
             if (item.indent !== fieldIndent + 2 || !list) throw new Error('invalid MCP args list')
-            args.push(plainString(cleanValue(list[1])))
+            args.push(plainString(cleanValue(list[1]!)))
             index++
           }
           if (!args.length) throw new Error('MCP args must use [] when empty')
           fields.set(key, args)
         } else if (key === 'env') {
           const pairs: [string, string][] = []
-          while (index < entries.length && entries[index].indent > fieldIndent) {
-            const item = entries[index]
+          while (index < entries.length && entries[index]!.indent > fieldIndent) {
+            const item = entries[index]!
             if (item.indent !== fieldIndent + 2 || item.content.startsWith('-')) throw new Error('invalid MCP environment map')
             pairs.push(pair(item.content))
             index++
@@ -231,7 +231,7 @@ function parseMcpServers(lines: string[]): Record<string, HarnessMcpServer> {
         } else throw new Error('MCP type and command must be strings')
       }
     }
-    if (index < entries.length && entries[index].indent > listIndent) throw new Error('unexpected MCP configuration continuation')
+    if (index < entries.length && entries[index]!.indent > listIndent) throw new Error('unexpected MCP configuration continuation')
     servers[name] = makeServer(fields)
   }
   return servers
@@ -245,23 +245,23 @@ export function parseAgentDefinition(text: string): AgentDefinition {
     return { prompt: '' }
   }
   const definition: AgentDefinition = { prompt: text.slice(frontmatter[0].length).trim() }
-  const lines = frontmatter[1].split(/\r?\n/)
+  const lines = frontmatter[1]!.split(/\r?\n/)
   const seen = new Set<string>()
   let parent: string | undefined
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
+    const line = lines[i]!
     if (!line.trim() || /^\s*#/.test(line)) continue
     if (line.startsWith(' ') && parent) continue
     const field = line.match(/^([A-Za-z_][\w-]*)[ \t]*:([ \t]|$)/)
     if (!field) throw new Error('unsupported agent frontmatter key')
-    const key = parent = field[1]
+    const key = parent = field[1]!
     if (key !== 'model' && key !== 'tools' && key !== 'disallowedTools' && key !== 'egress' && key !== 'mcpServers') continue
     if (seen.has(key)) throw new Error('duplicate agent frontmatter key')
     seen.add(key)
     const value = line.slice(field[0].length).trim().replace(/^#.*$/, '')
     const continuation: string[] = []
-    while (i + 1 < lines.length && (!lines[i + 1].trim() || /^\s*#/.test(lines[i + 1]) || lines[i + 1].startsWith(' '))) {
-      const line = lines[++i]
+    while (i + 1 < lines.length && (!lines[i + 1]!.trim() || /^\s*#/.test(lines[i + 1]!) || lines[i + 1]!.startsWith(' '))) {
+      const line = lines[++i]!
       if (line.trim() && !/^\s*#/.test(line)) continuation.push(line)
     }
     const toolField = key === 'tools' || key === 'disallowedTools'
@@ -273,9 +273,9 @@ export function parseAgentDefinition(text: string): AgentDefinition {
       let indent: number | undefined
       definition[key] = validateTools(continuation.map((line) => {
         const item = line.match(/^( +)-[ \t]+(.+)$/)
-        if (!item || (indent !== undefined && item[1].length !== indent)) throw new Error('unsupported agent tool list entry')
-        indent = item[1].length
-        return scalar(item[2], true)
+        if (!item || (indent !== undefined && item[1]!.length !== indent)) throw new Error('unsupported agent tool list entry')
+        indent = item[1]!.length
+        return scalar(item[2]!, true)
       }))
     } else {
       if (continuation.length) throw new Error('unsupported agent policy continuation')
