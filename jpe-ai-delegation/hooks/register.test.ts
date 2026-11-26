@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
-import { attemptHistory, checkHarnessResult, endAnchor, forbiddenHarnessModel, harnessArgv, harnessEnv, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
+import { attemptHistory, checkHarnessResult, endAnchor, forbiddenHarnessModel, hasChatTemplateLeak, harnessArgv, harnessEnv, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
 import { register } from './register'
 import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
@@ -22,7 +22,7 @@ type World = {
   codexQuota?: 'absent' | 'hangs' | 'refused' | string
   env?: Record<string, string>; definition?: string; files?: Record<string, string>; fsThrows?: boolean; worktreeExit?: number; temporaryExit?: number
   childHangs?: boolean
-  harnessAnswer?: string; harnessStdout?: string; harnessExit?: number; harnessElapsedMs?: number
+  harnessAnswer?: string; harnessStdout?: string; harnessStdouts?: string[]; harnessExit?: number; harnessElapsedMs?: number
   repository?: unknown; properties?: unknown; githubPrivateAuth?: boolean; githubAuthDenied?: boolean; pr?: unknown; githubError?: boolean; githubInvalidJson?: boolean
   originUrl?: string; pathRealpaths?: Record<string, string>; pathGitRoots?: Record<string, string>; unresolvedPaths?: string[]; pathKinds?: Record<string, 'file' | 'directory'>
   zcodeExit?: number; zcodeOutput?: string; zcodeAvailable?: boolean; zcodeThrows?: boolean; zcodeTruncated?: boolean
@@ -46,6 +46,7 @@ function world(w: World = {}) {
   }
   register(on as never)
   const calls: Call[] = []
+  let harnessRunCount = 0
   const writes: string[] = []
   const storeMap = new Map<string, unknown>()
   const fetches: { url: string; body?: string }[] = []
@@ -138,9 +139,10 @@ function world(w: World = {}) {
         return { ...RAN, exitCode: w.codexExit ?? 0, stderr: w.codexStderr ?? '' }
       }
       if (argv[0] === 'claude') {
-        if (w.harnessAnswer === undefined && w.harnessStdout === undefined && w.harnessExit === undefined) return RAN
+        if (w.harnessAnswer === undefined && w.harnessStdout === undefined && w.harnessStdouts === undefined && w.harnessExit === undefined) return RAN
         clockNow += w.harnessElapsedMs ?? 0
-        return { ...RAN, exitCode: w.harnessExit ?? 0, stdout: w.harnessStdout ?? JSON.stringify({ is_error: false, subtype: 'success', result: w.harnessAnswer, modelUsage: { [init?.env?.ANTHROPIC_MODEL ?? 'medium']: {} } }) }
+        const harnessStdout = w.harnessStdouts?.[harnessRunCount++] ?? w.harnessStdout
+        return { ...RAN, exitCode: w.harnessExit ?? 0, stdout: harnessStdout ?? JSON.stringify({ is_error: false, subtype: 'success', result: w.harnessAnswer, modelUsage: { [init?.env?.ANTHROPIC_MODEL ?? 'medium']: {} } }) }
       }
       if (argv[0] === 'codex-quota') {
         if (w.codexQuota === undefined || w.codexQuota === 'absent') throw new Error('spawn codex-quota ENOENT')
@@ -404,6 +406,16 @@ describe('policy', () => {
     expect(checkHarnessResult({ is_error: false, subtype: 'error_max_turns', result: 'partial', modelUsage: { medium: {} } }, 'medium').ok).toBe(false)
     expect(checkHarnessResult({ is_error: false, subtype: 'success', result: '  ', modelUsage: { medium: {} } }, 'medium').ok).toBe(false)
     expect(forbiddenHarnessModel('ANTHROPIC/Small')).toBe(true)
+  })
+  test('chat-template and tool-call syntax is rejected while ordinary wording is accepted', () => {
+    for (const answer of [
+      '<|im_start|>assistant\n<tool_call>{"name":"get_task","arguments":{"id":1}}</tool_call>',
+      '<|message_model|><|content_thinking|>Need use tool.<|end_message|>',
+      '<function_call>lookup()</function_call>',
+    ]) expect(hasChatTemplateLeak(answer)).toBe(true)
+    expect(hasChatTemplateLeak('The word tool_call appears here without angle brackets.')).toBe(false)
+    expect(checkHarnessResult({ is_error: false, subtype: 'success', result: '<|message_model|><|content_thinking|>Need use tool.<|end_message|>', modelUsage: { medium: {} } }, 'medium'))
+      .toEqual({ ok: false, reason: 'harness answer contains chat-template syntax' })
   })
   test('the executor table carries only valid rows and harness ranks first', () => {
     expect(EXECUTOR_TABLE.map((r) => r.id)).toEqual(['homelab-harness', 'host-harness', 'qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
@@ -1351,6 +1363,23 @@ describe('harness executor', () => {
     expect(text(await w.agent())).toContain('[routed: harness medium-homelab]')
     expect(w.calls.filter((call) => call.argv[0] === 'claude')).toHaveLength(1)
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'homelab-harness' })
+  })
+  test('chat-template leaks from harness answers fail privately and fall through to the next row', async () => {
+    const leaks = [
+      '<|im_start|>assistant\n<tool_call>{"name":"get_task","arguments":{"id":1}}</tool_call>',
+      '<|message_model|><|content_thinking|>Need use tool.<|end_message|>',
+    ]
+    for (const leaked of leaks) {
+      const w = world({ env: gateways, harnessStdouts: [
+        JSON.stringify({ is_error: false, subtype: 'success', result: leaked, modelUsage: { 'medium-homelab': {} } }),
+        JSON.stringify({ is_error: false, subtype: 'success', result: 'checked answer', modelUsage: { medium: {} } }),
+      ] })
+      expect(text(await w.agent())).toContain('[routed: harness medium]')
+      expect(w.calls.filter((call) => call.argv[0] === 'claude')).toHaveLength(2)
+      expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'host-harness', skipped: { 'homelab-harness': 'failed' } })
+      expect(w.logs.some((line) => line.includes('harness failed: harness answer contains chat-template syntax'))).toBe(true)
+      expect([...w.logs, ...w.writes].join('\n')).not.toContain(leaked)
+    }
   })
   test('a malformed harness result falls through both harness rows to Codex', async () => {
     const w = world({ env: gateways, harnessStdout: '{"is_error":false,"subtype":"success","result":" ","modelUsage":{"medium":{}}}' })
@@ -2603,6 +2632,15 @@ describe('paid rows and router-chat', () => {
     const sent = w.fetches.filter((f) => f.url === 'http://localhost:8000/v1/chat/completions' && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f)).map((f) => JSON.parse(f.body!).model)
     expect(sent).toEqual(['small', 'local-only'])
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'chat-flat', fell_through_from: ['local small'] })
+  })
+  test('chat-template syntax from a router-chat row is logged without answer text and falls through', async () => {
+    const leaked = '<|message_model|><|content_thinking|>Need use tool.<|end_message|>'
+    const w = world({ quota: 1, env: localDown, gatewayStatus: noLocal, gatewayAnswer: { 'local-only': leaked }, files: { [OVERRIDE]: JSON.stringify([flat]) } })
+    const result = await w.agent(textTask)
+    expect(text(result)).not.toContain(leaked)
+    expect(w.logs).toContain('ai-delegation: router-chat failed: answer contains chat-template syntax')
+    expect(routeEvents(w).at(-1)).toMatchObject({ skipped: { 'chat-flat': 'failed' }, fell_through_from: ['local small', 'chat-flat'] })
+    expect([...w.logs, ...w.writes].join('\n')).not.toContain(leaked)
   })
   test('a router-chat row never re-sends the prompt to the alias the local rung just failed', async () => {
     const w = world({ quota: 1, env: localDown, gatewayStatus: noLocal, files: { [OVERRIDE]: JSON.stringify([{ ...flat, model: 'small' }]) } })

@@ -357,7 +357,13 @@ export function checkHarnessResult(json: unknown, alias: string): { ok: true; te
   for (const model of Object.keys(value.modelUsage)) {
     if (forbiddenHarnessModel(model)) return { ok: false, violation: true, reason: 'harness modelUsage includes a forbidden model' }
   }
+  if (hasChatTemplateLeak(text)) return { ok: false, reason: 'harness answer contains chat-template syntax' }
   return { ok: true, text }
+}
+
+// Raw chat templates and tool calls are control syntax, not user-facing answers.
+export function hasChatTemplateLeak(text: string): boolean {
+  return /<\|[\w]+\|>|<\/?(?:tool_call|function_call)>/i.test(text)
 }
 
 // Override rows merge over the table by id; new ids append. Invalid rows are dropped and named in `rejected`.

@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
 import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
@@ -1121,7 +1121,11 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
       // estimate exceeds 60% of the model's window, or a model with no known window, is skipped.
       const fits = textOnly && base ? ((await localModelWindows($, base))[row.model!] ?? 0) * 0.6 >= estimateTokens(e.prompt) : false
       const out = fits ? await runLocal($, e, base!, row.model!, TEXT_EXECUTOR_TIMEOUT_MS) : undefined
-      if (out) result = routedResult(e, 'ai-delegation-router-chat', out, `[routed: router-chat ${row.model}]`, 0)
+      if (out && hasChatTemplateLeak(out)) {
+        $.ui.log('ai-delegation: router-chat failed: answer contains chat-template syntax')
+        await logDecision($, 'router-chat failure: answer contains chat-template syntax')
+        skipped[executor] = 'failed'
+      } else if (out) result = routedResult(e, 'ai-delegation-router-chat', out, `[routed: router-chat ${row.model}]`, 0)
       else skipped[executor] = !textOnly || (base && !fits) ? 'ineligible' : base ? 'failed' : 'not_installed'
     } else if (!repo || (tools && !tools.includes(row.tool!))) {
       skipped[executor] = repo ? 'not_installed' : 'ineligible'
