@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
-import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
+import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, HarnessMcpConfig, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
 
@@ -331,14 +331,14 @@ async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: 
 
 // One headless CLI child on the on-host router, under the row's role alias. The model guard runs before any spawn;
 // the JSON result must identify a successful non-Claude model before its text can reach the parent session.
-async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt: string, timeoutMs: number, cwd?: string): Promise<string | undefined> {
+async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt: string, timeoutMs: number, cwd?: string, mcp?: HarnessMcpConfig): Promise<string | undefined> {
   if (forbiddenHarnessModel(row.model)) throw new Error('harness row names a forbidden Claude model')
   let failure: string | undefined
   let end: AttemptEnd = 'failed'
   try {
     const base = await $.env.get('LITELLM_LOCAL_BASE_URL')
     const env = harnessEnv(row, base, await childPath($))
-    const argv = harnessArgv(sandbox, cwd ?? await $.session.cwd())
+    const argv = harnessArgv(sandbox, cwd ?? await $.session.cwd(), mcp)
     const childArgv = cwd ? ['/bin/sh', '-c', 'cd "$1" && shift && exec "$@"', 'sh', cwd, ...argv] : argv
     const result = await runChild($, childArgv, prompt, timeoutMs, env)
     if (result.exitCode !== 0) {
@@ -487,7 +487,7 @@ async function runRoutedCodex($: Engine, e: AgentCall, route: string, codexRoute
   return routedResult(e, 'ai-delegation-codex', out, `[routed: codex ${codexRoute.family} ${codexRoute.effort}, ${detail}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started)
 }
 
-async function runRoutedHarness($: Engine, e: AgentCall, row: ExecutorRow, sandbox: Sandbox): Promise<unknown | undefined> {
+async function runRoutedHarness($: Engine, e: AgentCall, row: ExecutorRow, sandbox: Sandbox, mcp?: HarnessMcpConfig): Promise<unknown | undefined> {
   const started = await clockNow($)
   let cwd: string | undefined
   if (e.isolation) {
@@ -498,18 +498,18 @@ async function runRoutedHarness($: Engine, e: AgentCall, row: ExecutorRow, sandb
     const worktree = await $.process.run(['git', '-C', await $.session.cwd(), 'worktree', 'add', '--detach', cwd, 'HEAD'], { timeoutMs: 30_000 })
     if (worktree.exitCode !== 0) return undefined
   }
-  const out = await runHarness($, row, sandbox, e.prompt, ROUTED_CHILD_TIMEOUT_MS, cwd)
+  const out = await runHarness($, row, sandbox, e.prompt, ROUTED_CHILD_TIMEOUT_MS, cwd, mcp)
   if (!out) return undefined
   await logDecision($, `route: ${row.id} -> harness ${row.model} (${sandbox})`)
   return routedResult(e, 'ai-delegation-harness', out, `[routed: harness ${row.model}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started)
 }
 
 // The harness rung uses the same sandbox decision as Codex and adds the mandatory bulk-complex tag before dispatch.
-async function runHarnessRung($: Engine, e: AgentCall, row: ExecutorRow, customSandbox: Sandbox | undefined, rungLabel: () => Promise<Label>): Promise<unknown | undefined> {
+async function runHarnessRung($: Engine, e: AgentCall, row: ExecutorRow, customSandbox: Sandbox | undefined, rungLabel: () => Promise<Label>, mcp?: HarnessMcpConfig): Promise<unknown | undefined> {
   const label = await rungLabel()
   const sandbox = routedSandbox(e, label, customSandbox)
   if (mandatoryLabel(`${e.description ?? ''}\n${e.prompt}`)) e = { ...e, description: `${e.description ?? ''} [class: bulk-complex]` }
-  return runRoutedHarness($, e, row, sandbox)
+  return runRoutedHarness($, e, row, sandbox, mcp)
 }
 
 // The one sandbox decision both subscription rungs share: advisory classes, Explore and Plan types, a read-only custom
@@ -951,8 +951,11 @@ async function routeGuards($: Engine, e: AgentCall, event: RouteEvent): Promise<
   if (call.subagent_type && !isGenericType(call)) {
     try {
       definition = await customAgentDefinition($, call.subagent_type)
-    } catch {
-      return { allowed: false, result: await stopRoute($, e, event, 'custom agent model or tool restrictions could not be read') }
+    } catch (error) {
+      const reason = error instanceof Error && error.message === 'invalid MCP server configuration'
+        ? 'custom agent MCP server configuration is invalid'
+        : 'custom agent model or tool restrictions could not be read'
+      return { allowed: false, result: await stopRoute($, e, event, reason) }
     }
     event.agent_type = agentType(e, definition !== undefined)
     // No agent file: a built-in or plugin agent takes the executor ladder like any other spawn. A name that cannot
@@ -963,6 +966,13 @@ async function routeGuards($: Engine, e: AgentCall, event: RouteEvent): Promise<
     if (definition) {
       if (forbiddenModel(definition.model)) {
         return { allowed: false, result: await stopRoute($, e, event, 'Sonnet, Opus and Fable subagents are forbidden') }
+      }
+      const hasMcpTools = definition.tools?.some((tool) => tool.startsWith('mcp__')) ?? false
+      if (hasMcpTools && !definition.mcpServers) {
+        return { allowed: false, result: await stopRoute($, e, event, 'custom agent MCP tools have no server configuration') }
+      }
+      if ((hasMcpTools || definition.mcpServers) && definition.disallowedTools?.length) {
+        return { allowed: false, result: await stopRoute($, e, event, 'custom agent MCP tool denials cannot be enforced by the harness') }
       }
       customSandbox = customAgentSandbox(definition)
       if (definition.prompt) call = { ...call, prompt: `Custom agent instructions:\n${definition.prompt}\n\nTask:\n${call.prompt}` }
@@ -1002,9 +1012,13 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
   if (!guards.allowed) return guards.result
   e = guards.call
   const { definition, customSandbox } = guards
+  const mcp: HarnessMcpConfig | undefined = definition?.mcpServers ? {
+    mcpServers: definition.mcpServers,
+    allowedTools: definition.tools?.filter((tool) => tool.startsWith('mcp__')) ?? [],
+  } : undefined
   // Network or GitHub-write work can only use the host harness; sandbox executors lack egress and credentials.
   if (networkTask(original.description, original.prompt) || definition?.egress === 'network') {
-    return routeNetwork($, e, event, customSandbox)
+    return routeNetwork($, e, event, customSandbox, mcp)
   }
   if (original.run_in_background === true) {
     await logRoute($, event, 'background', 'run_in_background')
@@ -1049,7 +1063,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
   const quota = await currentQuota($, table)
   const eligible = eligibleRows(table, Boolean(repo), now, quota.budgets)
   const { skipped } = eligible
-  const needsMcp = Boolean(definition?.tools?.some((tool) => tool.startsWith('mcp__')))
+  const needsMcp = Boolean(definition?.mcpServers || definition?.tools?.some((tool) => tool.startsWith('mcp__')))
   const rows = eligible.rows.filter((row) => {
     if (needsMcp && row.transport !== 'harness') { skipped[row.id] = 'ineligible'; return false }
     if (!needsMcp && row.transport === 'harness' && (event.kind.value === 'code' || textOnly)) { skipped[row.id] = 'ineligible'; return false }
@@ -1104,7 +1118,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
       if (!base) { skipped[executor] = 'not_installed'; continue }
       if (harnessDown) { skipped[executor] = 'failed'; continue }
       const startedAt = await clockNow($)
-      result = await runHarnessRung($, e, row, customSandbox, rungLabel)
+      result = await runHarnessRung($, e, row, customSandbox, rungLabel, mcp)
       if (!result) {
         skipped[executor] = harnessViolations.has(executor) ? 'violation' : 'failed'
         const ended = await clockNow($)
@@ -1160,7 +1174,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
 }
 
 // Network or GitHub-write work runs only on harness rows, which use the host router and never a sandbox executor.
-async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent, customSandbox?: Sandbox): Promise<unknown> {
+async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent, customSandbox?: Sandbox, mcp?: HarnessMcpConfig): Promise<unknown> {
   const base = (await $.env.get('LITELLM_LOCAL_BASE_URL'))?.replace(/\/+$/, '')
   const table = await loadExecutorTable($)
   const now = (await clockNow($)) ?? Number.POSITIVE_INFINITY
@@ -1184,7 +1198,7 @@ async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent, customSa
       continue
     }
     const startedAt = await clockNow($)
-    const result = await runHarnessRung($, e, row, customSandbox, rungLabel)
+    const result = await runHarnessRung($, e, row, customSandbox, rungLabel, mcp)
     if (result) {
       await logRoute($, event, row.id, 'network work')
       return result

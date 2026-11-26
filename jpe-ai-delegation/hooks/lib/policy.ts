@@ -3,6 +3,8 @@
 export type Label = 'bulk' | 'bulk-complex' | 'standard' | 'complex' | 'plan' | 'deep'
 export type Verdict = { verdict: 'safe' | 'unsafe'; reason: string }
 export type Sandbox = 'read-only' | 'workspace-write'
+export type HarnessMcpServer = { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+export type HarnessMcpConfig = { mcpServers: Record<string, HarnessMcpServer>; allowedTools: string[] }
 export type Family = 'luna'
 export type Route = { family: Family; effort: string }
 
@@ -291,14 +293,17 @@ export function validRow(r: unknown): ExecutorRow | undefined {
 }
 
 // The only way to build a headless CLI command. Its tool set excludes Agent and Task so the child cannot delegate.
-export function harnessArgv(sandbox: Sandbox, tree?: string): string[] {
+export function harnessArgv(sandbox: Sandbox, tree?: string, mcp?: HarnessMcpConfig): string[] {
   if (sandbox !== 'read-only' && sandbox !== 'workspace-write') throw new Error(`harness sandbox must be read-only or workspace-write, got ${sandbox}`)
   const argv = ['claude', '-p', '--max-turns', '100', '--bare', '--exclude-dynamic-system-prompt-sections', '--no-session-persistence', '--output-format', 'json', '--permission-mode', sandbox === 'read-only' ? 'dontAsk' : 'acceptEdits']
   if (sandbox === 'read-only') {
     if (!tree?.startsWith('/')) throw new Error('a read-only harness needs the absolute directory it runs in')
-    return [...argv, '--tools', 'Bash,Read', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true, filesystem: { denyWrite: [tree] } } })]
+    argv.push('--tools', 'Bash,Read', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true, filesystem: { denyWrite: [tree] } } }))
+  } else {
+    argv.push('--tools', 'Bash,Read,Edit,Write,Grep,Glob', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true } }))
   }
-  return [...argv, '--tools', 'Bash,Read,Edit,Write,Grep,Glob', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true } })]
+  if (mcp) argv.push('--mcp-config', JSON.stringify({ mcpServers: mcp.mcpServers }), '--strict-mcp-config', '--allowedTools', mcp.allowedTools.join(','))
+  return argv
 }
 
 const HARNESS_MODEL_ENV = [

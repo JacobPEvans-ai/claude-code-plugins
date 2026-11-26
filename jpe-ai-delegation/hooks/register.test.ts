@@ -5,6 +5,7 @@ import { register } from './register'
 import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import { RECORDED_QUOTA } from './fixtures/quota-instant-query'
+import type { HarnessMcpConfig } from './lib/policy'
 
 const RAN = { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false }
 const CACHE = JSON.stringify({ models: [
@@ -250,6 +251,7 @@ const NO_EXECUTOR_AFTER_ERROR_REASON = 'no executor answered after error (Claude
 const NETWORK_NO_EXECUTOR = 'network work: no non-Claude executor answered; run it in the lead session or through zcode-job/codex CLI'
 const NETWORK_NO_EXECUTOR_REASON = 'network work: no harness executor answered'
 const MCP_NO_EXECUTOR = 'agent needs its MCP servers; no harness executor answered'
+const TRACKER_MCP_SERVERS = 'mcpServers:\n  - tracker: { type: stdio, command: /usr/bin/tracker }'
 const CLAUDE_SUBAGENT_DENY = 'Claude subagents are disabled by operator order; delegate through a non-Claude executor'
 const refusedText = `FAIL | router | ${NO_EXECUTOR}\n\n[routing stopped]`
 const networkRefusedText = `FAIL | router | ${NETWORK_NO_EXECUTOR}\n\n[routing stopped]`
@@ -365,6 +367,23 @@ describe('policy', () => {
     expect(harnessArgv('workspace-write')).toEqual(['claude', '-p', '--max-turns', '100', '--bare', '--exclude-dynamic-system-prompt-sections', '--no-session-persistence', '--output-format', 'json', '--permission-mode', 'acceptEdits', '--tools', 'Bash,Read,Edit,Write,Grep,Glob', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true } })])
     for (const route of Object.values(CODEX)) expect(codexArgv('workspace-write', route, 'gpt-newer-luna', '/tmp/out')[0]).toBe('codex')
     expect(ROUTED_CHILD_TIMEOUT_MS).toBe(1_500_000)
+  })
+  test('MCP server config and allowed tools are appended exactly for both harness sandboxes', () => {
+    const mcp: HarnessMcpConfig = {
+      mcpServers: { tasks: { type: 'stdio', command: '/usr/bin/tasks', args: ['--read-only'], env: { MODE: 'safe' } } },
+      allowedTools: ['mcp__tasks__get_task', 'mcp__tasks__list_tasks'],
+    }
+    const mcpArgs = ['--mcp-config', JSON.stringify({ mcpServers: mcp.mcpServers }), '--strict-mcp-config', '--allowedTools', 'mcp__tasks__get_task,mcp__tasks__list_tasks']
+    expect(harnessArgv('read-only', '/workspace', mcp)).toEqual([
+      'claude', '-p', '--max-turns', '100', '--bare', '--exclude-dynamic-system-prompt-sections', '--no-session-persistence', '--output-format', 'json', '--permission-mode', 'dontAsk',
+      '--tools', 'Bash,Read', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true, filesystem: { denyWrite: ['/workspace'] } } }),
+      ...mcpArgs,
+    ])
+    expect(harnessArgv('workspace-write', undefined, mcp)).toEqual([
+      'claude', '-p', '--max-turns', '100', '--bare', '--exclude-dynamic-system-prompt-sections', '--no-session-persistence', '--output-format', 'json', '--permission-mode', 'acceptEdits',
+      '--tools', 'Bash,Read,Edit,Write,Grep,Glob', '--settings', JSON.stringify({ sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, failIfUnavailable: true } }),
+      ...mcpArgs,
+    ])
   })
   test('harness rows validate only with a non-Claude alias and valid window', () => {
     const row = { id: 'x-harness', transport: 'harness', model: 'medium', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 }
@@ -619,7 +638,8 @@ describe('custom agent tool authority', () => {
   for (const tools of ['mcp__tracker__*', '[mcp__tracker__get*]', '[Read, mcp__tracker__get]', '[WebFetch]', '[Agent]', '[Bash(git:*)]', '[Read, Bash(git:*)]', '[]']) {
     for (const quota of [0, 1]) {
       test(`native-only tools route through the executor ladder at quota ${quota}: ${tools}`, async () => {
-        const w = world({ quota, env: gateways, definition: `---\nmodel: haiku\ntools: ${tools}\n---\nFollow the native instructions.` })
+        const mcpPolicy = tools.includes('mcp__') ? `\n${TRACKER_MCP_SERVERS}` : ''
+        const w = world({ quota, env: gateways, definition: `---\nmodel: haiku\ntools: ${tools}${mcpPolicy}\n---\nFollow the native instructions.` })
         const call = { ...coding, subagent_type: 'tracker-specialist', model: 'haiku', isolation: 'worktree' }
         const result = text(await w.agent(call))
         if (tools.includes('mcp__')) {
@@ -693,7 +713,7 @@ describe('custom agent tool authority', () => {
   })
   for (const model of ['inherit', undefined]) {
     test(`native-only tools with an inherited model route through the ladder: ${model}`, async () => {
-      const w = world({ definition: `---\n${model ? `model: ${model}\n` : ''}tools: mcp__tracker__*\n---\nPerform the task.` })
+      const w = world({ definition: `---\n${model ? `model: ${model}\n` : ''}tools: mcp__tracker__*\n${TRACKER_MCP_SERVERS}\n---\nPerform the task.` })
       expect(text(await w.agent({ subagent_type: 'tracker-specialist' }))).toBe(`FAIL | router | ${MCP_NO_EXECUTOR}\n\n[routing stopped]`)
       expect(runs(w)).toEqual([])
       expect(w.nextCalls).toEqual([])
@@ -701,14 +721,14 @@ describe('custom agent tool authority', () => {
   }
   for (const model of ['sonnet', 'opus', 'fable']) {
     test(`native-only tools fail closed for a forbidden model: ${model}`, async () => {
-      const w = world({ definition: `---\n${model ? `model: ${model}\n` : ''}tools: mcp__tracker__*\n---\nPerform the task.` })
+      const w = world({ definition: `---\n${model ? `model: ${model}\n` : ''}tools: mcp__tracker__*\n${TRACKER_MCP_SERVERS}\n---\nPerform the task.` })
       expect(text(await w.agent({ subagent_type: 'tracker-specialist' }))).toStartWith('FAIL | router |')
       expect(w.nextCalls).toEqual([])
       expect(runs(w)).toEqual([])
     })
   }
   test('an explicit model override never reaches a Claude model: the spawn still routes to the ladder', async () => {
-    const w = world({ definition: '---\nmodel: inherit\ntools: mcp__tracker__*\n---\nPerform the task.' })
+    const w = world({ definition: `---\nmodel: inherit\ntools: mcp__tracker__*\n${TRACKER_MCP_SERVERS}\n---\nPerform the task.` })
     expect(text(await w.agent({ subagent_type: 'tracker-specialist', model: 'haiku' }))).toBe(`FAIL | router | ${MCP_NO_EXECUTOR}\n\n[routing stopped]`)
     expect(w.nextCalls).toEqual([])
   })
@@ -1292,7 +1312,7 @@ describe('background spawns', () => {
     expect(w.submitted).toEqual([])
   })
   test('a native custom agent in the background routes through the ladder too', async () => {
-    const w = world({ definition: '---\nmodel: haiku\ntools: mcp__tracker__*\n---\nPerform the task.' })
+    const w = world({ definition: `---\nmodel: haiku\ntools: mcp__tracker__*\n${TRACKER_MCP_SERVERS}\n---\nPerform the task.` })
     await w.agent({ subagent_type: 'tracker-specialist', run_in_background: true })
     expect(w.nextCalls).toEqual([])
     await settle()
@@ -1357,6 +1377,30 @@ describe('harness executor', () => {
     expect(child.stdin).toBe('Read app.ts.')
     expect(child.env).toMatchObject({ ANTHROPIC_BASE_URL: 'http://localhost:8000', ANTHROPIC_AUTH_TOKEN: 'local-proxy', ANTHROPIC_MODEL: 'medium-homelab', ANTHROPIC_SMALL_FAST_MODEL: 'medium-homelab', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' })
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'homelab-harness', reason: 'highest-ranked eligible executor that answered' })
+  })
+  test('a custom MCP agent reaches the harness with its declared server and tool patterns', async () => {
+    const definition = '---\nname: task-agent\ntools:\n  - Read\n  - mcp__tasks__get_task\nmcpServers:\n  - tasks:\n      type: stdio\n      command: /usr/bin/tasks\n      args:\n        - --read-only\n      env:\n        MODE: safe\n---\nUse the task server.'
+    const w = world({ env: gateways, harnessAnswer: 'task result', definition })
+    expect(text(await w.agent({ subagent_type: 'task-agent', description: '[class: standard]', prompt: 'Get task 1.' }))).toContain('[routed: harness medium-homelab]')
+    const child = w.calls.find((call) => call.argv[0] === 'claude')!
+    expect(child.argv).toEqual(harnessArgv('read-only', '/workspace', {
+      mcpServers: { tasks: { type: 'stdio', command: '/usr/bin/tasks', args: ['--read-only'], env: { MODE: 'safe' } } },
+      allowedTools: ['mcp__tasks__get_task'],
+    }))
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'homelab-harness' })
+  })
+  test('an MCP agent is refused when no harness row is installed', async () => {
+    const definition = '---\ntools: [mcp__tasks__get_task]\nmcpServers:\n  - tasks: { type: stdio, command: /usr/bin/tasks }\n---\nUse the task server.'
+    const w = world({ definition, harnessAnswer: 'must not run' })
+    expect(text(await w.agent({ subagent_type: 'task-agent', prompt: 'Get task 1.' }))).toContain('agent needs its MCP servers; no harness executor answered')
+    expect(w.calls.some((call) => call.argv[0] === 'claude')).toBe(false)
+    expect(w.nextCalls).toEqual([])
+  })
+  test('invalid MCP config refuses the agent before any executor runs', async () => {
+    const w = world({ env: gateways, definition: '---\ntools: [mcp__tasks__get_task]\nmcpServers:\n  - tasks\n---\nUse the task server.' })
+    expect(text(await w.agent({ subagent_type: 'task-agent', prompt: 'Get task 1.' }))).toContain('custom agent MCP server configuration is invalid')
+    expect(w.calls.some((call) => call.argv[0] === 'claude')).toBe(false)
+    expect(w.nextCalls).toEqual([])
   })
   test('a checked harness answer routes under its row id', async () => {
     const w = world({ env: gateways, harnessAnswer: 'done' })
@@ -2849,7 +2893,7 @@ describe('sandbox job outcomes', () => {
 })
 
 describe('route telemetry', () => {
-  const tracker = '---\nmodel: haiku\ntools: mcp__tracker__*\n---\nPerform the task.'
+  const tracker = `---\nmodel: haiku\ntools: mcp__tracker__*\n${TRACKER_MCP_SERVERS}\n---\nPerform the task.`
   const exits: [string, World, Record<string, unknown>, string, string][] = [
     ['forbidden explicit model', {}, { model: 'sonnet' }, 'stopped', 'Sonnet, Opus and Fable subagents are forbidden'],
     ['forbidden custom agent model', { definition: '---\nmodel: opus\n---\nReview.' }, { subagent_type: 'reviewer' }, 'stopped', 'Sonnet, Opus and Fable subagents are forbidden'],
@@ -3044,7 +3088,7 @@ describe('route telemetry failures', () => {
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'stopped', reason: NO_EXECUTOR_REASON })
   })
   test('a rejected next never runs for a custom agent: the ladder answers and one route line is written', async () => {
-    const w = world({ definition: '---\nmodel: haiku\ntools: mcp__tracker__*\n---\nPerform the task.', nextRejects: true })
+    const w = world({ definition: `---\nmodel: haiku\ntools: mcp__tracker__*\n${TRACKER_MCP_SERVERS}\n---\nPerform the task.`, nextRejects: true })
     expect(text(await w.agent({ subagent_type: 'reviewer' }))).toBe(`FAIL | router | ${MCP_NO_EXECUTOR}\n\n[routing stopped]`)
     expect(w.nextCalls).toEqual([])
     expect(routeEvents(w).filter((l) => l.event === 'route')).toHaveLength(1)
@@ -3073,7 +3117,7 @@ describe('route telemetry content and bounds', () => {
     const explore = world({ quota: 1, zcodeAvailable: false })
     await explore.agent({ subagent_type: 'Explore', description: 'read and triage', prompt: 'Read app.ts.' })
     expect(routeEvents(explore).at(-1).agent_type).toBe('Explore')
-    const custom = world({ definition: '---\nmodel: haiku\ntools: mcp__tracker__*\n---\nPerform the task.' })
+    const custom = world({ definition: `---\nmodel: haiku\ntools: mcp__tracker__*\n${TRACKER_MCP_SERVERS}\n---\nPerform the task.` })
     await custom.agent({ subagent_type: 'reviewer' })
     expect(routeEvents(custom).at(-1).agent_type).toBe('reviewer')
     const missing = world()
