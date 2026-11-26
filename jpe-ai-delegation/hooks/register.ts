@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
 import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
@@ -61,6 +61,7 @@ let quotaRead: Promise<QuotaFetch> | undefined
 let quotaAt = 0
 let localWindows: Promise<Record<string, number | undefined>> | undefined
 let executorTable: Promise<ExecutorRow[]> | undefined
+let retiredAgents: Promise<Map<string, string>> | undefined
 let backgroundJobs = 0
 
 // The built-in executor table merged with the operator override, read once per session. A bad override is logged and ignored.
@@ -78,6 +79,27 @@ function loadExecutorTable($: Engine): Promise<ExecutorRow[]> {
     }
   })()
   return executorTable
+}
+
+// The agent types the operator retired, with the command that replaces each, read once per session from the
+// operator's own file. The plugin ships no map: a missing, unreadable or malformed file retires nothing, so the
+// guard never refuses a spawn on its own.
+function loadRetiredAgents($: Engine): Promise<Map<string, string>> {
+  retiredAgents ??= (async () => {
+    try {
+      const home = await $.env.get('HOME')
+      if (!home) return new Map<string, string>()
+      const path = `${home}/.config/ai-delegation/retired.json`
+      if (!(await $.fs.exists(path))) return new Map<string, string>()
+      const { retired, rejected } = parseRetiredAgents(JSON.parse((await $.fs.read(path)) as string))
+      if (rejected.length) await logDecision($, `retired agent entries rejected: ${rejected.join(', ')}`)
+      return retired
+    } catch {
+      await logDecision($, 'retired agent file unreadable; no agent type is retired')
+      return new Map<string, string>()
+    }
+  })()
+  return retiredAgents
 }
 
 async function withTimeout<T>($: Engine, work: Promise<T>, ms: number): Promise<T> {
@@ -852,6 +874,12 @@ async function routeGuards($: Engine, e: AgentCall, event: RouteEvent): Promise<
   if (forbiddenModel(e.model) || forbiddenModel(e.subagent_type)) {
     return { allowed: false, result: await stopRoute($, e, event, 'Sonnet, Opus and Fable subagents are forbidden') }
   }
+  // A retired agent type stops at once and names the command that replaces it: no definition file is read and no
+  // executor, classifier or local model is called.
+  const retired = retiredAgent(e.subagent_type, await loadRetiredAgents($))
+  if (retired) {
+    return { allowed: false, result: await stopRoute($, e, event, `agent type ${retired.type} is retired; run: ${retired.command}`) }
+  }
   let call = e
   let definition: AgentDefinition | undefined
   let customSandbox: Sandbox | undefined
@@ -1099,6 +1127,7 @@ export const register: Register = (on) => {
   quotaAt = 0
   localWindows = undefined
   executorTable = undefined
+  retiredAgents = undefined
   routeTelemetryFailureLogged = false
 
   // Start the first quota read without delaying the session.
