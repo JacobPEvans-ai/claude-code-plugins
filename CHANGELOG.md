@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.81.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.81.0...v6.81.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **ci:** keep the hook runtime check on Python 3.9 ([#925](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/925)) ([c302fe1](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/c302fe1753dc2fdaf7dd82d99281237b50e5840f))
+
 ## [6.81.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.80.0...v6.81.0) (2026-11-26)
 
 
