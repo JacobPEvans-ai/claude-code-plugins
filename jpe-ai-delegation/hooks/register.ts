@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
 import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
@@ -17,6 +17,7 @@ const CODEX_QUOTA_TIMEOUT_MS = 15_000
 const CODEX_QUOTA_TTL_MS = 14_400_000
 const CODEX_QUOTA_FAILURE_TTL_MS = 600_000
 const CODEX_QUOTA_KEY = 'codex-quota'
+const HARNESS_FALLBACK_MS = 30_000
 // The Codex child streams through `$.process.spawn`: `$.process.run` stops every child at ten minutes, and a long
 // task is not a failure. This bound ends the stream instead; leaving the loop kills the child.
 const LONG_RUN_MS = 3_600_000
@@ -50,7 +51,7 @@ const JOB_STATUS_TIMEOUT_MS = 15_000
 const JOB_LOG_BYTES = 131_072
 const LOG_TIMEOUT_MS = 5_000
 let routeTelemetryFailureLogged = false
-const PROMPT_POLICY = 'The jpe-ai-delegation hook places every Agent spawn. Tag self-contained text work [class: text] and put all of its text in the prompt; the hook sends it to an on-host local model first. An untagged spawn is classified by the hook itself, and an explicit tag always remains the override. Every other spawn, and any local answer that fails its check, goes to the subscription executors it is eligible for, ranked by usage pace. ZCode, OpenCode Go and Cursor take only non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository; their output is a ready PR; leak-scan it before merge; never auto-merge. Codex runs Luna at xhigh, the only Codex model and effort (AGENTS.md, \'Delegation routing\'). Tag work that needs network or GitHub writes [needs: network]; no executor may run it, so the hook refuses it at once — run it in the lead session or through the zcode-job or codex CLI. There is no Claude rung: no Agent spawn ever runs on a Claude model, and a spawn no non-Claude executor answers is refused, not run in the session. Never Sonnet, Opus or Fable subagents. Never send secrets, credentials, inventory or incident content to any executor. Antigravity stays a second-opinion reviewer, never an executor.'
+const PROMPT_POLICY = 'The jpe-ai-delegation hook places every Agent spawn. Tag self-contained text work [class: text] and put all of its text in the prompt; the hook sends it to an on-host local model first. An untagged spawn is classified by the hook itself, and an explicit tag always remains the override. Every other spawn, and any local answer that fails its check, goes to the eligible executors ranked by usage pace. The headless harness runs through the on-host router and is locked to non-Claude aliases; MCP-declaring custom agents run only on harness rows. ZCode, OpenCode Go and Cursor take only non-sensitive coding tagged [task: code] [repo: owner/repository] in a public repository; their output is a ready PR; leak-scan it before merge; never auto-merge. Codex runs Luna at xhigh, the only Codex model and effort (AGENTS.md, \'Delegation routing\'). Tag work that needs network or GitHub writes [needs: network]; it runs only on the harness executors, never an executor sandbox. There is no Claude rung: no Agent spawn ever runs on a Claude model, and a spawn no non-Claude executor answers is refused, not run in the session. Never Sonnet, Opus or Fable subagents. Never send secrets, credentials, inventory or incident content to any executor. Antigravity stays a second-opinion reviewer, never an executor.'
 
 // A quota read: the instant-query result, or why there is none.
 type QuotaFetch = { result?: unknown[]; failure?: 'quota_unconfigured' | 'quota_unreachable' }
@@ -63,6 +64,7 @@ let localWindows: Promise<Record<string, number | undefined>> | undefined
 let executorTable: Promise<ExecutorRow[]> | undefined
 let retiredAgents: Promise<Map<string, string>> | undefined
 let backgroundJobs = 0
+let harnessViolations = new Set<string>()
 
 // The built-in executor table merged with the operator override, read once per session. A bad override is logged and ignored.
 function loadExecutorTable($: Engine): Promise<ExecutorRow[]> {
@@ -327,6 +329,43 @@ async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: 
   return undefined
 }
 
+// One headless CLI child on the on-host router, under the row's role alias. The model guard runs before any spawn;
+// the JSON result must identify a successful non-Claude model before its text can reach the parent session.
+async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt: string, timeoutMs: number, cwd?: string): Promise<string | undefined> {
+  if (forbiddenHarnessModel(row.model)) throw new Error('harness row names a forbidden Claude model')
+  let failure: string | undefined
+  let end: AttemptEnd = 'failed'
+  try {
+    const base = await $.env.get('LITELLM_LOCAL_BASE_URL')
+    const env = harnessEnv(row, base, await childPath($))
+    const argv = harnessArgv(sandbox, cwd ?? await $.session.cwd())
+    const childArgv = cwd ? ['/bin/sh', '-c', 'cd "$1" && shift && exec "$@"', 'sh', cwd, ...argv] : argv
+    const result = await runChild($, childArgv, prompt, timeoutMs, env)
+    if (result.exitCode !== 0) {
+      failure = `harness exited with code ${result.exitCode}${childDetail(result.stderr)}`
+    } else {
+      const checked = checkHarnessResult(JSON.parse(result.stdout), row.model!)
+      if (checked.ok) {
+        end = 'ok'
+        return checked.text
+      }
+      failure = checked.reason
+      if (checked.violation) {
+        end = 'violation'
+        harnessViolations.add(row.id)
+      }
+    }
+  } catch (error) {
+    if (isTimeout(error)) end = 'timeout'
+    failure = `harness invocation failed: ${errText(error)}`
+  } finally {
+    await logExecutorOutcome($, row.id, end)
+  }
+  $.ui.log(`ai-delegation: harness failed: ${failure ?? 'unknown failure'}`)
+  await logDecision($, `harness failure: ${failure ?? 'unknown failure'}`)
+  return undefined
+}
+
 // Attempt outcomes use only the row id, result class and hook clock; prompt and answer text stay out of the log.
 async function logExecutorOutcome($: Engine, executor: Executor, end: AttemptEnd): Promise<void> {
   const ended_ms = await clockNow($)
@@ -448,6 +487,31 @@ async function runRoutedCodex($: Engine, e: AgentCall, route: string, codexRoute
   return routedResult(e, 'ai-delegation-codex', out, `[routed: codex ${codexRoute.family} ${codexRoute.effort}, ${detail}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started)
 }
 
+async function runRoutedHarness($: Engine, e: AgentCall, row: ExecutorRow, sandbox: Sandbox): Promise<unknown | undefined> {
+  const started = await clockNow($)
+  let cwd: string | undefined
+  if (e.isolation) {
+    if (e.isolation !== 'worktree') return undefined
+    const temporary = await $.process.run(['mktemp', '-d'], { timeoutMs: 5_000 })
+    cwd = temporary.stdout.trim()
+    if (temporary.exitCode !== 0 || !cwd.startsWith('/')) return undefined
+    const worktree = await $.process.run(['git', '-C', await $.session.cwd(), 'worktree', 'add', '--detach', cwd, 'HEAD'], { timeoutMs: 30_000 })
+    if (worktree.exitCode !== 0) return undefined
+  }
+  const out = await runHarness($, row, sandbox, e.prompt, ROUTED_CHILD_TIMEOUT_MS, cwd)
+  if (!out) return undefined
+  await logDecision($, `route: ${row.id} -> harness ${row.model} (${sandbox})`)
+  return routedResult(e, 'ai-delegation-harness', out, `[routed: harness ${row.model}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started)
+}
+
+// The harness rung uses the same sandbox decision as Codex and adds the mandatory bulk-complex tag before dispatch.
+async function runHarnessRung($: Engine, e: AgentCall, row: ExecutorRow, customSandbox: Sandbox | undefined, rungLabel: () => Promise<Label>): Promise<unknown | undefined> {
+  const label = await rungLabel()
+  const sandbox = routedSandbox(e, label, customSandbox)
+  if (mandatoryLabel(`${e.description ?? ''}\n${e.prompt}`)) e = { ...e, description: `${e.description ?? ''} [class: bulk-complex]` }
+  return runRoutedHarness($, e, row, sandbox)
+}
+
 // The one sandbox decision both subscription rungs share: advisory classes, Explore and Plan types, a read-only custom
 // agent, and a task that asks for a review, audit or verdict without asking for any change never write.
 function routedSandbox(e: AgentCall, label: Label, customSandbox: Sandbox | undefined): Sandbox {
@@ -489,7 +553,8 @@ const NO_EXECUTOR = 'no non-Claude executor answered; nothing ran'
 const NO_EXECUTOR_REASON = 'no executor answered (Claude terminal rung removed)'
 const NO_EXECUTOR_AFTER_ERROR_REASON = 'no executor answered after error (Claude terminal rung removed)'
 const NETWORK_NO_EXECUTOR = 'network work: no non-Claude executor answered; run it in the lead session or through zcode-job/codex CLI'
-const NETWORK_NO_EXECUTOR_REASON = 'network work: no executor may run it'
+const NETWORK_NO_EXECUTOR_REASON = 'network work: no harness executor answered'
+const MCP_NO_EXECUTOR = 'agent needs its MCP servers; no harness executor answered'
 const CLAUDE_SUBAGENT_DENY = 'Claude subagents are disabled by operator order; delegate through a non-Claude executor'
 
 async function refuse($: Engine, e: AgentCall, event: RouteEvent, text: string, reason: string): Promise<unknown> {
@@ -937,10 +1002,9 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
   if (!guards.allowed) return guards.result
   e = guards.call
   const { definition, customSandbox } = guards
-  // Network or GitHub-write work: no executor sandbox has that egress or may hold its credentials, and no executor
-  // row may run it, so the route refuses at once without attempting anything.
+  // Network or GitHub-write work can only use the host harness; sandbox executors lack egress and credentials.
   if (networkTask(original.description, original.prompt) || definition?.egress === 'network') {
-    return routeNetwork($, e, event)
+    return routeNetwork($, e, event, customSandbox)
   }
   if (original.run_in_background === true) {
     await logRoute($, event, 'background', 'run_in_background')
@@ -985,7 +1049,13 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
   const quota = await currentQuota($, table)
   const eligible = eligibleRows(table, Boolean(repo), now, quota.budgets)
   const { skipped } = eligible
-  const rows = eligible.rows
+  const needsMcp = Boolean(definition?.tools?.some((tool) => tool.startsWith('mcp__')))
+  const rows = eligible.rows.filter((row) => {
+    if (needsMcp && row.transport !== 'harness') { skipped[row.id] = 'ineligible'; return false }
+    if (!needsMcp && row.transport === 'harness' && (event.kind.value === 'code' || textOnly)) { skipped[row.id] = 'ineligible'; return false }
+    if (row.transport === 'harness' && !base) { skipped[row.id] = 'not_installed'; return false }
+    return true
+  })
   const { scores } = quota
   event.quota_unknown = quota.unknown
   event.quota_source = quota.sources
@@ -1009,12 +1079,17 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
   // on this repository sits out for a while.
   let outcomes: JobOutcome[] | undefined
   const tools = await sandboxTools($)
+  let harnessDown = false
   // One label classification per spawn, asked by whichever rung runs first.
   let labelPromise: Promise<Label> | undefined
   const rungLabel = (): Promise<Label> => (labelPromise ??= classify($, e))
   for (const executor of ranked.order.filter((id) => quota.nativeSkips[id] === undefined)) {
     const row = rows.find((r) => r.id === executor)!
-    if (row.transport === 'codex') {
+    if (row.transport === 'harness' && harnessViolations.has(executor)) {
+      skipped[executor] = 'violation'
+      continue
+    }
+    if ((row.transport === 'harness' && base && !harnessDown) || row.transport === 'codex') {
       const attemptNow = await clockNow($)
       if (attemptNow !== null && recentAttemptFailures(attemptHistory(await decisionLogLines($), attemptNow), executor, attemptNow)) {
         skipped[executor] = 'recent_failures'
@@ -1025,7 +1100,17 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
     let cancelled = false
     let unaccepted = false
     let unconfirmed = false
-    if (row.transport === 'codex') {
+    if (row.transport === 'harness') {
+      if (!base) { skipped[executor] = 'not_installed'; continue }
+      if (harnessDown) { skipped[executor] = 'failed'; continue }
+      const startedAt = await clockNow($)
+      result = await runHarnessRung($, e, row, customSandbox, rungLabel)
+      if (!result) {
+        skipped[executor] = harnessViolations.has(executor) ? 'violation' : 'failed'
+        const ended = await clockNow($)
+        if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
+      }
+    } else if (row.transport === 'codex') {
       result = await runCodexRung($, e, customSandbox, rungLabel)
       if (!result) skipped[executor] = 'failed'
     } else if (row.transport === 'router-chat' && event.fell_through_from.includes(`local ${row.model}`)) {
@@ -1066,13 +1151,45 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
     event.fell_through_from.push(executor)
   }
   // No executor took the task and no Claude rung remains: refuse instead of handing the spawn to the session.
+  if (needsMcp) return refuse($, e, event, MCP_NO_EXECUTOR, MCP_NO_EXECUTOR)
   return refuse($, e, event, NO_EXECUTOR, NO_EXECUTOR_REASON)
 }
 
-// Network or GitHub-write work runs on no executor: every sandbox denies egress and holds no credentials, and no
-// transport may take it. The route refuses at once, attempting nothing; the result text tells the lead to run the
-// work in the lead session or through the zcode-job / codex CLI.
-async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent): Promise<unknown> {
+// Network or GitHub-write work runs only on harness rows, which use the host router and never a sandbox executor.
+async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent, customSandbox?: Sandbox): Promise<unknown> {
+  const base = (await $.env.get('LITELLM_LOCAL_BASE_URL'))?.replace(/\/+$/, '')
+  const table = await loadExecutorTable($)
+  const now = (await clockNow($)) ?? Number.POSITIVE_INFINITY
+  const quota = await currentQuota($, table)
+  const harnessRows = table.filter((row) => row.transport === 'harness')
+  const { rows, skipped } = eligibleRows(harnessRows, false, now, quota.budgets)
+  event.eligible = rows.map((row) => row.id)
+  event.skipped = skipped
+  event.quota_unknown = quota.unknown
+  event.quota_source = quota.sources
+  let labelPromise: Promise<Label> | undefined
+  const rungLabel = (): Promise<Label> => (labelPromise ??= classify($, e))
+  let harnessDown = false
+  for (const row of rows) {
+    if (!base) { skipped[row.id] = 'not_installed'; continue }
+    if (harnessViolations.has(row.id)) { skipped[row.id] = 'violation'; continue }
+    if (harnessDown) { skipped[row.id] = 'failed'; continue }
+    const attemptNow = await clockNow($)
+    if (attemptNow !== null && recentAttemptFailures(attemptHistory(await decisionLogLines($), attemptNow), row.id, attemptNow)) {
+      skipped[row.id] = 'recent_failures'
+      continue
+    }
+    const startedAt = await clockNow($)
+    const result = await runHarnessRung($, e, row, customSandbox, rungLabel)
+    if (result) {
+      await logRoute($, event, row.id, 'network work')
+      return result
+    }
+    skipped[row.id] = harnessViolations.has(row.id) ? 'violation' : 'failed'
+    const ended = await clockNow($)
+    if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
+    event.fell_through_from.push(row.id)
+  }
   return refuse($, e, event, NETWORK_NO_EXECUTOR, NETWORK_NO_EXECUTOR_REASON)
 }
 
@@ -1128,6 +1245,7 @@ export const register: Register = (on) => {
   localWindows = undefined
   executorTable = undefined
   retiredAgents = undefined
+  harnessViolations = new Set<string>()
   routeTelemetryFailureLogged = false
 
   // Start the first quota read without delaying the session.
