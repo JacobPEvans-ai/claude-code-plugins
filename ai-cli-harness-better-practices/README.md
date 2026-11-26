@@ -13,15 +13,18 @@ The default `/wrap-up` does not.
 
 ## Skills
 
+- **`/goal`** — Emit one `/goal` line for the work in flight, under 4,000
+  characters. It derives the focus from the session and wraps trailofbits
+  `goal-prompt`; campaign-sized work goes to `/agentops:craft-goal`.
 - **`/wrap-up`** — Decide whether the plan is actually complete, then emit the
-  right forward artifact for either answer. It composes `/agentops:research`,
-  `/agentops:postmortem`, `/agentops:craft-goal` and `/agentops:doc`.
+  right forward artifact for either answer. It composes `/goal`,
+  `/agentops:research`, `/agentops:postmortem` and `/agentops:doc`.
 - **`/track-followups`** — File triaged follow-ups in the task tracker or the
   incident system; `/agentops:triage` decides untriaged items first.
 - **`/work-management`** — Start work from a tracker card, rank a card or epic,
   or run the weekly review by the work management standard.
-- **Superseded shims** — `/goal` (use `/agentops:craft-goal`), `/session-status`
-  and `/wrap-up-docs` (use `/agentops:doc`), `/replan` (use `/agentops:plan`).
+- **Superseded shims** — `/session-status` and `/wrap-up-docs` (use
+  `/agentops:doc`), `/replan` (use `/agentops:plan`).
   `/resume` is removed; use `/agentops:doc`.
 
 ## Usage
@@ -51,7 +54,8 @@ This plugin deliberately does not reimplement work that already exists:
 | Need | Use |
 | --- | --- |
 | Plan or re-plan a change | `agentops:plan` |
-| Goal prompt with a finish line | `agentops:craft-goal` |
+| Capped `/goal` line | trailofbits `goal-prompt`, wrapped by `/goal` |
+| Long-running goal campaign with budgets | `agentops:craft-goal` |
 | Handoff, resume and docs | `agentops:doc` |
 | Check whether a done claim holds | `agentops:research` |
 | Session retrospectives | `agentops:postmortem` |

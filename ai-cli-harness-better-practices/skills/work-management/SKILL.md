@@ -41,7 +41,7 @@ Takes one card reference. Any runner can take a card. `<runner>` is the agent th
 5. Create a worktree the way the repository's contributor rules say. With Herdr,
    `herdr worktree create --cwd <repo> --branch <branch> --base <default-branch ref> --path <absolute path>`
    creates it and opens a workspace on it.
-6. Build the goal with `/agentops:craft-goal` from the card's objective, its done-when check and what must
+6. Build the goal with `/goal` (this plugin) from the card's objective, its done-when check and what must
    not be touched.
 7. Start the runner on the worktree. With Herdr: `herdr agent start <name> --kind <runner> --pane <id>`,
    then `herdr agent prompt <id> "<goal>"`. Without Herdr, print the goal and the worktree path so a person
@@ -86,4 +86,4 @@ each move of an epic.
 
 - **track-followups** (this plugin): records new work that a session finds.
 - **wrap-up** (this plugin): ends the session that did the work.
-- **`/agentops:craft-goal`**: builds the goal the runner starts from.
+- **`/goal`** (this plugin): builds the goal the runner starts from.
