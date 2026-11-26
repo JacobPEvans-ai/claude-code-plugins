@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.34.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.33.0...jpe-ai-delegation-v1.34.0) (2026-11-26)
+
+
+### Features
+
+* **jpe-ai-delegation:** add semaphore-converge caller skill ([#915](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/915)) ([ec158bb](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/ec158bb7a0117c4010edcac104e23723bbd0eec2))
+
 ## [1.33.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.32.0...jpe-ai-delegation-v1.33.0) (2026-11-26)
 
 
