@@ -5,6 +5,8 @@ This plugin is specific to the maintainer's own setup and is not intended for ge
 ## Skills
 
 - **`/delegation-ladder`** - Apply the maintainer's executor ladder, eligibility rules, and verification steps
+- **`/semaphore-converge`** - Ask the router's converge agent for a Semaphore preview, then run one confirmed template by id;
+  no caller touches Semaphore directly
 
 ## Hooks
 
