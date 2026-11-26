@@ -12,15 +12,20 @@ flowchart TD
 
     subgraph core["Harness core (no git required)"]
         wrapup["/wrap-up"]
+        goalw["/goal"]
         track["/track-followups"]
     end
 
     subgraph agentops["agentops plugin"]
         research["/agentops:research"]:::external
         post["/agentops:postmortem"]:::external
-        goal["/agentops:craft-goal"]:::external
+        craft["/agentops:craft-goal"]:::external
         doc["/agentops:doc"]:::external
         triage["/agentops:triage"]:::external
+    end
+
+    subgraph tob["trailofbits plugin"]
+        gprompt["goal-prompt"]:::external
     end
 
     subgraph optional["Optional git enrichment"]
@@ -32,14 +37,16 @@ flowchart TD
     wrapup --> research
     wrapup --> post
     wrapup --> track
-    wrapup --> goal
+    wrapup --> goalw
+    goalw --> gprompt
+    goalw -.->|"campaigns"| craft
     wrapup --> doc
     wrapup -.->|"if git repo"| refresh
     wrapup -.->|"if git repo"| prune
     wrapup -.->|"if git repo"| ghcli
     track --> triage
 
-    class wrapup,track ai
+    class wrapup,goalw,track ai
 ```
 
 ## The git guard
@@ -110,8 +117,10 @@ not silently take the "no" path and skip a check that would otherwise have run.
 
 ## agentops composition
 
-`/goal`, `/session-status`, `/replan` and `/wrap-up-docs` are shims
-that point to agentops skills. `/wrap-up` composes those skills and keeps only
-what is specific here: the completion verdict, the git-flow promotion gate, the
-Path B resume blocks, and `purge-pr` mode. `/track-followups` keeps the tracker
-routing and creation mechanics.
+`/session-status`, `/replan` and `/wrap-up-docs` are shims that point to
+agentops skills. `/goal` is a wrapper: it derives the focus from the session,
+runs trailofbits `goal-prompt` (or `/agentops:craft-goal` for campaigns), and
+returns the measured character count that `/wrap-up` needs. `/wrap-up`
+composes those skills and keeps only what is specific here: the completion
+verdict, the git-flow promotion gate, the Path B resume blocks, and `purge-pr`
+mode. `/track-followups` keeps the tracker routing and creation mechanics.
