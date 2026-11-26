@@ -151,7 +151,7 @@ No follow-up work in the Step 0 report → skip this step and say so.
 
 ### A3. Follow-Up Session Prompt
 
-If the Step 0 report surfaced follow-up work, invoke `/agentops:craft-goal` for its
+If the Step 0 report surfaced follow-up work, invoke `/goal` (this plugin) for its
 next-session objective. Print the statement and measured character count with
 the working directory, plan path, remaining work, and relevant context from
 the Step 0 report. Include full URLs for identifiers returned by A2.5.
@@ -193,7 +193,7 @@ in.
 
 Goal: emit one copy-pasteable, self-contained resume block per coherent
 group of remaining work, in dependency order, each carrying a real
-`/agentops:craft-goal` statement — never "continue what you were doing".
+`/goal` statement — never "continue what you were doing".
 
 Done when: every plan-checklist item still unchecked and every `TaskList`
 task not `completed` appears in exactly one block; each block states its
@@ -215,7 +215,7 @@ in one operation. Sequence and command shapes:
 
 ## Related Skills
 
-- **`/agentops:craft-goal`** — supplies the bounded objective for Path A Step A3
+- **`/goal`** (this plugin) — supplies the capped objective for Path A Step A3
   and the Path B resume blocks.
 - **`/agentops:postmortem`** — the Path A Step A2 retrospective.
 - **`/agentops:doc`** — the portable handoff document, and docs that must absorb

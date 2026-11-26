@@ -182,5 +182,5 @@ target lands.
 - **wrap-up** (this plugin) — calls this skill at Path A step A2.5 so follow-ups
   are recorded before the handoff artifact is built.
 - **`/agentops:triage`** — decides take, ask for more, or close for untriaged items.
-- **`/agentops:craft-goal`** — supplies the objective for the session-sized bucket
+- **`/goal`** (this plugin) — supplies the objective for the session-sized bucket
   carried in the next-session prompt rather than tracked here.
