@@ -103,3 +103,55 @@ teardown() { rm -rf "$TMP"; }
   grep -q 'x-subagent-release: 1' "$FAKE_CURL_LOG"
   grep -q '"model":"medium"' "$FAKE_CURL_LOG"
 }
+
+@test "--prefix-file text + --save-chain + --session-id chains KV prefix byte-identically" {
+  printf '200||{"model":"medium","choices":[{"message":{"content":"DRAFT"}}]}\n200||{"model":"medium","choices":[{"message":{"content":"VERIFIED"}}]}\n' > "$FAKE_CURL_SCRIPT"
+  printf 'STATIC_VAULT_PREFIX' > "$TMP/prefix.md"
+  run bash -c 'echo "Draft step" | "$1" --model medium --prefix-file "$2" --save-chain "$3" --session-id vault-123 2>"$4"' _ "$SCRIPT" "$TMP/prefix.md" "$TMP/chain.json" "$TMP/err1"
+  [ "$status" -eq 0 ]
+  [ "$output" = "DRAFT" ]
+  [ -f "$TMP/chain.json" ]
+  grep -q 'x-litellm-session-id: vault-123' "$FAKE_CURL_LOG"
+  grep -q '"litellm_session_id":"vault-123"' "$FAKE_CURL_LOG"
+  [ "$(jq -r 'length' "$TMP/chain.json")" -eq 3 ]
+  [ "$(jq -r '.[0].role + ":" + .[0].content' "$TMP/chain.json")" = "system:STATIC_VAULT_PREFIX" ]
+  [ "$(jq -r '.[2].role + ":" + .[2].content' "$TMP/chain.json")" = "assistant:DRAFT" ]
+
+  run bash -c 'echo "Verify step" | "$1" --model medium --prefix-file "$2" --save-chain "$3" --session-id vault-123 2>"$4"' _ "$SCRIPT" "$TMP/chain.json" "$TMP/chain2.json" "$TMP/err2"
+  [ "$status" -eq 0 ]
+  [ "$output" = "VERIFIED" ]
+  [ "$(jq -r 'length' "$TMP/chain2.json")" -eq 5 ]
+  [ "$(jq -r '.[0].content' "$TMP/chain2.json")" = "STATIC_VAULT_PREFIX" ]
+  [ "$(jq -r '.[2].content' "$TMP/chain2.json")" = "DRAFT" ]
+  [ "$(jq -r '.[3].content' "$TMP/chain2.json")" = "Verify step" ]
+  [ "$(jq -r '.[4].content' "$TMP/chain2.json")" = "VERIFIED" ]
+}
+
+@test "--system + text --prefix-file inserts shared context after system message" {
+  printf '200||%s\n' "$OK_BODY" > "$FAKE_CURL_SCRIPT"
+  printf 'SHARED_EVIDENCE' > "$TMP/evidence.txt"
+  run bash -c 'echo "Task" | "$1" --system "SYS" --prefix-file "$2" --save-chain "$3"' _ "$SCRIPT" "$TMP/evidence.txt" "$TMP/chain.json"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r 'length' "$TMP/chain.json")" -eq 5 ]
+  [ "$(jq -r '.[0].content' "$TMP/chain.json")" = "SYS" ]
+  [ "$(jq -r '.[1].content' "$TMP/chain.json")" = "SHARED_EVIDENCE" ]
+  [ "$(jq -r '.[2].role' "$TMP/chain.json")" = "assistant" ]
+  [ "$(jq -r '.[3].content' "$TMP/chain.json")" = "Task" ]
+}
+
+@test "--system with JSON array --prefix-file fails with exit 6 to protect token-0 prefix" {
+  printf '[{"role":"system","content":"S"},{"role":"user","content":"U"}]' > "$TMP/chain.json"
+  run bash -c 'echo "Task" | "$1" --system "NEW" --prefix-file "$2"' _ "$SCRIPT" "$TMP/chain.json"
+  [ "$status" -eq 6 ]
+  [ ! -f "$FAKE_CURL_LOG" ]
+}
+
+@test "LITELLM_LOCAL_BASE_URL is accepted as endpoint fallback" {
+  unset LLM_ROUTER_URL LLM_ROUTER_TOKEN_FILE
+  export LITELLM_LOCAL_BASE_URL="http://127.0.0.1:4000" LITELLM_LOCAL_KEY="local-key"
+  printf '200||%s\n' "$OK_BODY" > "$FAKE_CURL_SCRIPT"
+  run bash -c 'echo hi | "$1"' _ "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -q 'http://127.0.0.1:4000/v1/chat/completions' "$FAKE_CURL_LOG"
+  grep -q 'Bearer local-key' "$FAKE_CURL_LOG"
+}
