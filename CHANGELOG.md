@@ -1,5 +1,17 @@
 # Changelog
 
+## [6.80.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.79.0...v6.80.0) (2026-11-26)
+
+
+### Features
+
+* **agent:** zcode run j-06a361be763ebaaf ([662b88b](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/662b88bd7fd5131c2df6010353e9ac6e4c3f7008))
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** remove the headless-Claude harness executor ([#921](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/921)) ([662b88b](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/662b88bd7fd5131c2df6010353e9ac6e4c3f7008))
+
 ## [6.79.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.78.1...v6.79.0) (2026-11-26)
 
 
