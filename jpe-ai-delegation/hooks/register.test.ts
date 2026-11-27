@@ -1454,6 +1454,19 @@ describe('harness executor', () => {
     expect(w.calls.filter((call) => call.argv[0] === 'claude')).toHaveLength(1)
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex', skipped: { 'homelab-harness': 'failed', 'host-harness': 'failed' } })
   })
+  test('a turn-limit exit logs task_failed and still falls through to the next executor', async () => {
+    const w = world({ env: gateways, harnessExit: 1, harnessStdout: '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":101}' })
+    expect(text(await w.agent())).toContain('[routed: codex luna xhigh')
+    expect(routeEvents(w).filter((line) => line.event === 'outcome').map(({ executor, end }) => [executor, end]))
+      .toEqual([['homelab-harness', 'task_failed'], ['host-harness', 'task_failed'], ['codex', 'ok']])
+    expect(w.logs.some((line) => line.includes('harness failed: harness exited with code 1'))).toBe(true)
+  })
+  test('a non-zero exit with non-JSON stdout still logs a failed attempt', async () => {
+    const w = world({ env: gateways, harnessExit: 1, harnessStdout: 'not json' })
+    expect(text(await w.agent())).toContain('[routed: codex luna xhigh')
+    expect(routeEvents(w).filter((line) => line.event === 'outcome').map(({ executor, end }) => [executor, end]))
+      .toEqual([['homelab-harness', 'failed'], ['host-harness', 'failed'], ['codex', 'ok']])
+  })
 })
 
 describe('network work', () => {
@@ -2732,6 +2745,25 @@ describe('routed attempt outcomes', () => {
     expect(recentAttemptFailures(outcomes, 'routed-worker', NOW)).toBe(true)
     expect(recentAttemptFailures(outcomes, 'routed-worker', NOW + 20 * MIN - 1)).toBe(true)
     expect(recentAttemptFailures(outcomes, 'routed-worker', NOW + 20 * MIN)).toBe(false)
+  })
+
+  test('attempt history keeps a turn-limit outcome line', () => {
+    const outcomes = attemptHistory(lines([ended('codex', 'task_failed', NOW - MIN)]), NOW)
+    expect(outcomes).toEqual([{ executor: 'codex', end: 'task_failed', ts_ms: NOW - MIN, ended_ms: NOW - MIN }])
+  })
+
+  test('three turn-limit outcomes in the last hour never start a cooldown', () => {
+    const outcomes = attemptHistory(lines([ended('routed-worker', 'task_failed', NOW - 30 * MIN),
+      ended('routed-worker', 'task_failed', NOW - 20 * MIN), ended('routed-worker', 'task_failed', NOW - 10 * MIN)]), NOW)
+    expect(outcomes).toHaveLength(3)
+    expect(recentAttemptFailures(outcomes, 'routed-worker', NOW)).toBe(false)
+  })
+
+  test('a turn-limit outcome never completes a failure streak', () => {
+    const outcomes = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN),
+      ended('routed-worker', 'failed', NOW - 20 * MIN), ended('routed-worker', 'task_failed', NOW - 10 * MIN)]), NOW)
+    expect(outcomes).toHaveLength(3)
+    expect(recentAttemptFailures(outcomes, 'routed-worker', NOW)).toBe(false)
   })
 
   test('failures older than an hour do not count and a newer success clears the skip', () => {
