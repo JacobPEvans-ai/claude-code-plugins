@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.84.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.84.0...v6.84.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** turn-limit harness exits no longer trip the executor cooldown ([#934](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/934)) ([ce28eeb](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/ce28eebf1d73f260202996f3ede30274b14159f7))
+
 ## [6.84.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.83.0...v6.84.0) (2026-11-26)
 
 
