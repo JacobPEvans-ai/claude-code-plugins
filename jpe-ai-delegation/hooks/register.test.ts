@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
 import { attemptHistory, checkHarnessResult, endAnchor, forbiddenHarnessModel, hasChatTemplateLeak, harnessArgv, harnessEnv, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
 import { register } from './register'
-import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand } from './lib/policy'
+import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseSensitivityVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand, secretMaterial, SENSITIVITY, SENSITIVITY_ALIAS, SENSITIVITY_OUTPUT_TOKENS, SENSITIVITY_TIMEOUT_MS } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import { RECORDED_QUOTA } from './fixtures/quota-instant-query'
 import type { HarnessMcpConfig } from './lib/policy'
@@ -28,7 +28,7 @@ type World = {
   originUrl?: string; pathRealpaths?: Record<string, string>; pathGitRoots?: Record<string, string>; unresolvedPaths?: string[]; pathKinds?: Record<string, 'file' | 'directory'>
   zcodeExit?: number; zcodeOutput?: string; zcodeAvailable?: boolean; zcodeThrows?: boolean; zcodeTruncated?: boolean
   sandboxRuns?: Record<string, { exit: number; output: string }>; jobStatus?: Record<string, unknown>; statusHangs?: boolean; statusExit?: number; logTail?: unknown[]; tailTruncated?: boolean
-  gatewayTimeout?: boolean; gatewayStatus?: Record<string, number>; gatewayAnswer?: Record<string, string>; gatewayInvalidJson?: boolean; classifierTimeout?: boolean
+  gatewayTimeout?: boolean; gatewayStatus?: Record<string, number>; gatewayAnswer?: Record<string, string>; gatewayInvalidJson?: boolean; gatewayThrows?: boolean; classifierTimeout?: boolean
   quotaUrl?: string | null; quotaTimeout?: boolean; quotaText?: string; quotaSampleAge?: number; quotaStatus?: number
   quotaFileTypes?: Record<string, 'file' | 'directory' | 'symlink'>
   readThrows?: string; readHangs?: string
@@ -206,6 +206,7 @@ function world(w: World = {}) {
       ] }) }
       const body = JSON.parse(init.body ?? '{}')
       if (url.endsWith('/systemone')) return { ok: true, text: JSON.stringify({ answers: { route: { choice: w.label ?? 'standard', answer_confidence: 1 } } }) }
+      if (w.gatewayThrows) throw new Error('gateway request failed')
       if (w.gatewayTimeout || (w.classifierTimeout && body.model === 'small')) return new Promise<never>(() => {})
       const status = w.gatewayStatus?.[body.model] ?? 200
       return { ok: status === 200, text: w.gatewayInvalidJson ? '{' : JSON.stringify({ choices: [{ finish_reason: w.gatewayFinish ?? 'stop', message: { content: w.gatewayAnswer?.[body.model] ?? 'gateway result' } }] }) }
@@ -280,6 +281,7 @@ const nonGithub = (w: ReturnType<typeof world>) => w.fetches.filter((f) => !f.ur
 const classifierCalls = (w: ReturnType<typeof world>) => w.fetches.filter((f) => f.body !== undefined && JSON.parse(f.body).messages?.[0]?.content?.startsWith(KIND_CLASSIFIER) === true)
 // Chat-completion requests that carry the label-classifier instruction, i.e. the Codex rung's classification traffic.
 const labelClassifyCalls = (w: ReturnType<typeof world>) => w.fetches.filter((f) => f.body !== undefined && JSON.parse(f.body).messages?.[0]?.content?.startsWith(CLASSIFIER) === true)
+const sensitivityCalls = (w: ReturnType<typeof world>) => w.fetches.filter((f) => f.body !== undefined && JSON.parse(f.body).messages?.[0]?.content?.startsWith(SENSITIVITY) === true)
 // The fixed native quota command, one entry per call.
 const codexQuotaCalls = (w: ReturnType<typeof world>) => w.calls.filter((c) => c.argv[0] === 'codex-quota')
 
@@ -333,6 +335,45 @@ describe('policy', () => {
     expect(isAdvisory('complex')).toBe(false)
     expect(parseVerdict('{"verdict":"safe","reason":"bounded"}')).toEqual({ verdict: 'safe', reason: 'bounded' })
     expect(parseVerdict('{"verdict":"maybe","reason":"x"}')).toBeUndefined()
+  })
+  test('secretMaterial recognizes secret-looking values, not labels or placeholders', () => {
+    const values = [
+      '-----BEGIN CERTIFICATE-----',
+      `ghp_${'g'.repeat(36)}`,
+      `github_pat_${'g'.repeat(82)}`,
+      `xoxb-${'x'.repeat(20)}`,
+      `xoxp-${'x'.repeat(20)}`,
+      `xoxa-${'x'.repeat(20)}`,
+      'AKIA1234567890ABCDEF',
+      `sk-${'s'.repeat(20)}`,
+      `hvs.${'h'.repeat(20)}`,
+      `api_key=${'a'.repeat(32)}`,
+      `session_token: '${'b'.repeat(40)}'`,
+      `db_secret = ${'c'.repeat(32)}`,
+      `user_password: ${'d'.repeat(36)}`,
+    ]
+    for (const value of values) expect(secretMaterial(value)).toBe(true)
+    for (const value of [
+      'A check named Token Limits.',
+      'You hold no credentials.',
+      'api_key: ${API_KEY}',
+      'password: <password>',
+      `key=${'a'.repeat(31)}`,
+    ]) expect(secretMaterial(value)).toBe(false)
+  })
+  test('sensitivity verdict parsing accepts only one complete object with the promised fields', () => {
+    expect(SENSITIVITY_TIMEOUT_MS).toBe(20_000)
+    expect(parseSensitivityVerdict('{"verdict":"public","reason":"Ordinary public code."}')).toBe('public')
+    expect(parseSensitivityVerdict('{"verdict":"private","reason":"It names internal hosts."}')).toBe('private')
+    for (const value of [
+      undefined,
+      'public',
+      '{"verdict":"maybe","reason":"Unsure."}',
+      '{"verdict":"public","reason":"Okay."} trailing',
+      '{"verdict":"public","reason":"Okay.","extra":true}',
+      '{"verdict":"public"}',
+      '{"verdict":"public","reason":""}',
+    ]) expect(parseSensitivityVerdict(value)).toBeUndefined()
   })
   test('reviewOnly matches a review, audit or verdict ask that requests no change', () => {
     expect(reviewOnly('Review the supplied changes.')).toBe(true)
@@ -1982,6 +2023,63 @@ describe('routing batch', () => {
     const w = world({ quota: 1, env: gateways })
     await w.agent({ ...coding, prompt: 'Implement the router routing change for the memory cluster.' })
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', eligible: ['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'] })
+  })
+  test('the self-hosted sensitivity model allows harmless credential words in public code', async () => {
+    const reason = 'The terms are only constraints and a check name.'
+    const w = world({ quota: 1, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: JSON.stringify({ verdict: 'public', reason }) } })
+    const result = await w.agent({ ...coding, prompt: 'Add a check named "Token Limits" and note that you hold no credentials.' })
+    expect(text(result)).toContain('[routed: Qwen sandbox;')
+    expect(sensitivityCalls(w)).toHaveLength(1)
+    expect(JSON.parse(sensitivityCalls(w)[0].body!).model).toBe(SENSITIVITY_ALIAS)
+    expect(JSON.parse(sensitivityCalls(w)[0].body!)).toMatchObject({ max_tokens: SENSITIVITY_OUTPUT_TOKENS, chat_template_kwargs: { enable_thinking: false } })
+    expect(sensitivityCalls(w)[0].url).toBe('http://localhost:8000/v1/chat/completions')
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', sensitivity: { verdict: 'public', source: 'model' }, eligible: ['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'] })
+    expect(w.writes.join('')).not.toContain(reason)
+  })
+  test('a private sensitivity verdict removes sandbox eligibility and does not log its reason', async () => {
+    const reason = 'The task contains internal host and address details.'
+    const w = world({ quota: 1, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: JSON.stringify({ verdict: 'private', reason }) } })
+    await w.agent({ ...coding, prompt: 'Inventory the internal host names and IP addresses.' })
+    expect(sensitivityCalls(w)).toHaveLength(1)
+    expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
+    expect(routeEvents(w).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'model' }, skipped: { qwen: 'ineligible', zcode: 'ineligible', 'opencode-go': 'ineligible', cursor: 'ineligible' } })
+    expect(w.writes.join('')).not.toContain(reason)
+  })
+  for (const [name, options] of [
+    ['throws', { gatewayThrows: true }],
+    ['times out', { gatewayTimeout: true }],
+    ['returns a non-200 status', { gatewayStatus: { [SENSITIVITY_ALIAS]: 503 } }],
+    ['returns garbage', { gatewayAnswer: { [SENSITIVITY_ALIAS]: 'not a JSON verdict' } }],
+    ['returns an unknown verdict', { gatewayAnswer: { [SENSITIVITY_ALIAS]: '{"verdict":"unknown","reason":"Unclear."}' } }],
+  ] as const) {
+    test(`sensitivity ${name} falls back to credentialBrief in both directions`, async () => {
+      const privateFallback = world({ quota: 1, env: gateways, ...options })
+      await privateFallback.agent({ ...coding, prompt: 'Add a check named "Token Limits".' })
+      expect(routeEvents(privateFallback).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'fallback' }, skipped: { qwen: 'ineligible' } })
+      expect(privateFallback.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
+
+      const publicFallback = world({ quota: 1, env: gateways, ...options })
+      await publicFallback.agent({ ...coding, prompt: 'Refactor the CLI option parser.' })
+      expect(routeEvents(publicFallback).at(-1)).toMatchObject({ chosen: 'qwen', sensitivity: { verdict: 'public', source: 'fallback' } })
+      expect(publicFallback.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(true)
+    })
+  }
+  test('secret-looking GitHub token values never reach the sensitivity fetch', async () => {
+    const githubToken = world({ quota: 1, env: gateways })
+    await githubToken.agent({ ...coding, prompt: `Use ghp_${'g'.repeat(36)} for this change.` })
+    expect(githubToken.allFetches).toHaveLength(0)
+    expect(sensitivityCalls(githubToken)).toHaveLength(0)
+
+    const vaultToken = world({ quota: 1, env: gateways })
+    await vaultToken.agent({ ...coding, prompt: `Use hvs.${'h'.repeat(20)} for this change.` })
+    expect(sensitivityCalls(vaultToken)).toHaveLength(0)
+    expect(routeEvents(vaultToken).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'material' } })
+  })
+  test('non-code text keeps the local route without a sensitivity decision', async () => {
+    const w = world({ quota: 1, env: gateways })
+    expect(text(await w.agent(textTask))).toContain('[routed: local small]')
+    expect(sensitivityCalls(w)).toHaveLength(0)
+    expect(routeEvents(w).at(-1)).not.toHaveProperty('sensitivity')
   })
   for (const word of ['credential', 'auth', 'secret', 'token', 'password', 'key']) {
     test(`a ${word} brief in a verified public repository never reaches a sandbox row`, async () => {
