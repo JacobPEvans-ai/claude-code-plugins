@@ -39,6 +39,8 @@ This plugin is specific to the maintainer's own setup and is not intended for ge
   their configuration with `--strict-mcp-config`, and allows only MCP tool patterns from the agent's `tools` list.
   Invalid MCP definitions or MCP tool declarations without server configuration are refused.
 - **Network work** - Work that needs network access runs only on harness rows.
+- **Code work** - Code for a public repository goes to the sandbox rows, which return a pull request, and skips the
+  harness rows. Code for a private or unverified repository can run on the harness rows as well as Codex.
 - **Known limit** - `modelUsage` reports the alias requested by the child, so the router's own fallback chain must be
   kept free of Anthropic models.
 

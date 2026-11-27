@@ -1171,7 +1171,7 @@ describe('capped ladder', () => {
     await w.agent({ description: '[task: code]', prompt: 'Create /tmp/example/absent/child/new.ts and run the checks.' })
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(w.fetches.some((f) => f.url.startsWith('https://api.github.com/repos/'))).toBe(false)
-    expect(routeEvents(w).at(-1).eligible).toEqual(['codex'])
+    expect(routeEvents(w).at(-1).eligible).toEqual(['homelab-harness', 'host-harness', 'codex'])
   })
   test('paths in two repositories leave the repository uninferred', async () => {
     const w = world({ quota: 1, env: gateways, originUrl: 'https://github.com/example-org/example-repo.git',
@@ -1180,7 +1180,7 @@ describe('capped ladder', () => {
     await w.agent({ description: '[task: code]', prompt: 'Update /tmp/example/repo/src/main.ts and /tmp/example/other/notes.md.' })
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(w.fetches.some((f) => f.url.startsWith('https://api.github.com/repos/'))).toBe(false)
-    expect(routeEvents(w).at(-1).eligible).toEqual(['codex'])
+    expect(routeEvents(w).at(-1).eligible).toEqual(['homelab-harness', 'host-harness', 'codex'])
   })
   test('a relative prompt path resolves against the session directory and infers the repository', async () => {
     const w = world({ quota: 1, env: gateways, originUrl: 'git@github.com:example-org/example-repo.git', pathGitRoots: { '/workspace': '/workspace' } })
@@ -1363,11 +1363,18 @@ describe('refusal instead of a Claude rung', () => {
 })
 
 describe('harness executor', () => {
-  test('code briefs skip harness rows and never start the Claude CLI', async () => {
+  test('public code briefs skip harness rows and never start the Claude CLI', async () => {
     const w = world({ quota: 1, env: gateways, harnessAnswer: 'done' })
     await w.agent(coding)
     expect(routeEvents(w).at(-1).skipped).toMatchObject({ 'homelab-harness': 'ineligible', 'host-harness': 'ineligible' })
     expect(w.calls.some((call) => call.argv[0] === 'claude')).toBe(false)
+  })
+  test('private code briefs keep both harness rows beside Codex and the harness answers first', async () => {
+    const w = world({ quota: 1, env: gateways, harnessAnswer: 'done', repository: { visibility: 'private', private: true } })
+    await w.agent(coding)
+    expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
+    expect(routeEvents(w).at(-1)).toMatchObject({ kind: { value: 'code', source: 'tag' }, eligible: ['homelab-harness', 'host-harness', 'codex'], chosen: 'homelab-harness' })
+    expect(w.calls.some((call) => call.argv[0] === 'claude')).toBe(true)
   })
   test('a read-only spawn gets a sandboxed harness and a successful answer routes', async () => {
     const w = world({ quota: 1, env: gateways, harnessAnswer: 'found' })
@@ -1627,7 +1634,7 @@ describe('untagged kind classification', () => {
     const w = world({ quota: 1, env: gateways, gatewayAnswer: { small: 'code' }, repository: { visibility: 'private', private: true }, ...inference })
     await w.agent({ description: undefined, prompt: 'Update src/main.ts.' })
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-    expect(routeEvents(w).at(-1)).toMatchObject({ kind: { value: 'code', source: 'classifier' }, eligible: ['codex'] })
+    expect(routeEvents(w).at(-1)).toMatchObject({ kind: { value: 'code', source: 'classifier' }, eligible: ['homelab-harness', 'host-harness', 'codex'] })
   })
 
   test('an other reply, a timeout, a non-OK status and an unparsable body route as an untagged spawn', async () => {
@@ -1999,7 +2006,7 @@ describe('routing batch', () => {
     const w = world({ quota: 1, env: gateways, repository: { visibility: 'private', private: true } })
     expect(text(await w.agent(coding))).toBe(refusedText)
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-    expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, eligible: ['codex'], scores: { codex: { exhausted: true } } })
+    expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, eligible: ['homelab-harness', 'host-harness', 'codex'], scores: { codex: { exhausted: true } } })
     expect(w.nextCalls).toEqual([])
   })
   test('8: private-repo code with Codex quota to spare lands on Codex', async () => {
@@ -2408,7 +2415,7 @@ describe('cursor executor', () => {
     const w = world({ quota: 1, env: gateways, repository: { visibility: 'private', private: true }, cursorWindows: at(10) })
     expect(text(await w.agent(coding))).toBe(refusedText)
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-    expect(routeEvents(w).at(-1)).toMatchObject({ eligible: ['codex'], ...refusedRoute })
+    expect(routeEvents(w).at(-1)).toMatchObject({ eligible: ['homelab-harness', 'host-harness', 'codex'], ...refusedRoute })
     expect(w.nextCalls).toEqual([])
   })
 })
@@ -2487,7 +2494,7 @@ describe('executor table', () => {
     expect(text(await w.agent(coding))).toBe(refusedText)
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(w.calls.some((c) => c.stdin === 'executor override rows rejected: zcode\n')).toBe(true)
-    expect(routeEvents(w).at(-1)).toMatchObject({ eligible: ['codex'], ...refusedRoute })
+    expect(routeEvents(w).at(-1)).toMatchObject({ eligible: ['homelab-harness', 'host-harness', 'codex'], ...refusedRoute })
     expect(w.nextCalls).toEqual([])
   })
   test('an unreadable override falls back to the built-in table', async () => {

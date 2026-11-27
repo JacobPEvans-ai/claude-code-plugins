@@ -1072,7 +1072,8 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
   const needsMcp = Boolean(definition?.mcpServers || definition?.tools?.some((tool) => tool.startsWith('mcp__')))
   const rows = eligible.rows.filter((row) => {
     if (needsMcp && row.transport !== 'harness') { skipped[row.id] = 'ineligible'; return false }
-    if (!needsMcp && row.transport === 'harness' && (event.kind.value === 'code' || textOnly)) { skipped[row.id] = 'ineligible'; return false }
+    // Public code goes to the sandbox rows as a reviewed PR; private code keeps the harness rows beside Codex.
+    if (!needsMcp && row.transport === 'harness' && ((event.kind.value === 'code' && repo) || textOnly)) { skipped[row.id] = 'ineligible'; return false }
     if (row.transport === 'harness' && !base) { skipped[row.id] = 'not_installed'; return false }
     return true
   })
