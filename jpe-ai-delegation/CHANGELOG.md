@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.36.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.36.0...jpe-ai-delegation-v1.36.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** turn-limit harness exits no longer trip the executor cooldown ([#934](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/934)) ([ce28eeb](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/ce28eebf1d73f260202996f3ede30274b14159f7))
+
 ## [1.36.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.35.0...jpe-ai-delegation-v1.36.0) (2026-11-26)
 
 
