@@ -78,9 +78,6 @@ export const explicitLabel = (description: string | undefined, prompt?: string):
 }
 
 export const mandatoryLabel = (text: string): Label | undefined => /\b(auth(?:entication|orization)?|secrets?|credentials?|routers?|routing|memory|clusters?)\b/i.test(text) ? 'bulk-complex' : undefined
-// Words that keep a brief off the public sandbox rows even in a verified public repository; labelling stays with
-// mandatoryLabel.
-export const credentialBrief = (text: string): boolean => /\b(auth(?:entication|orization)?|secrets?|credentials?|tokens?|passwords?|keys?)\b/i.test(text)
 const SECRET_MATERIAL = /-----BEGIN [A-Z0-9][A-Z0-9 ]*-----|\bghp_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bxox[abp]-[A-Za-z0-9-]{12,}\b|\bAKIA[A-Z0-9]{16}\b|\bASIA[A-Z0-9]{16}\b|\bAIza[A-Za-z0-9_-]{35}\b|\bsk-[A-Za-z0-9_-]{20,}\b|\bhv[bsr]\.[A-Za-z0-9_-]{12,}\b|\bhf_[A-Za-z0-9_-]{12,}\b|\bxapp-[A-Za-z0-9-]{12,}\b|\bxoxe-[A-Za-z0-9-]{12,}\b/i
 const SECRET_ASSIGNMENT = /\b[A-Za-z0-9_.-]*(?:passphrase|password|passwd|credential|authorization|auth|key|token|secret)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([A-Za-z0-9+/_\-.]{16,}={0,2})["']?(?![A-Za-z0-9+/=_\-.])/gi
 const hasSecretAssignment = (text: string): boolean => [...text.matchAll(SECRET_ASSIGNMENT)].some(([, raw]) => {

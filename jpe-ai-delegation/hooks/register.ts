@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, parseSensitivityVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, secretMaterial, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand, SENSITIVITY, SENSITIVITY_ALIAS, SENSITIVITY_OUTPUT_TOKENS, SENSITIVITY_TIMEOUT_MS } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, parseSensitivityVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, secretMaterial, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand, SENSITIVITY, SENSITIVITY_ALIAS, SENSITIVITY_OUTPUT_TOKENS, SENSITIVITY_TIMEOUT_MS } from './lib/policy'
 import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, HarnessMcpConfig, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
@@ -675,7 +675,7 @@ async function github($: Engine, path: string): Promise<unknown> {
 type SensitivityDecision = { verdict: 'public' | 'private'; source: 'model' | 'fallback' | 'material' }
 
 // One bounded decision on the on-host sensitivity alias. Only a complete parsed verdict is trusted; every failure
-// returns the existing word-list result, without exposing the brief or model reason in logs.
+// keeps the brief private, without exposing the brief or model reason in logs.
 async function decideSensitivity($: Engine, text: string): Promise<SensitivityDecision> {
   try {
     const base = (await $.env.get('LITELLM_LOCAL_BASE_URL'))?.replace(/\/+$/, '')
@@ -685,14 +685,15 @@ async function decideSensitivity($: Engine, text: string): Promise<SensitivityDe
       body: JSON.stringify({ model: SENSITIVITY_ALIAS, max_tokens: SENSITIVITY_OUTPUT_TOKENS, ...NO_THINKING, messages: [{ role: 'user', content: `${SENSITIVITY}\n\nTask:\n${text}` }] }),
     }), SENSITIVITY_TIMEOUT_MS)
     if (!response.ok) throw new Error('HTTP failure')
-    const verdict = parseSensitivityVerdict(JSON.parse(response.text)?.choices?.[0]?.message?.content)
+    const choice = JSON.parse(response.text)?.choices?.[0]
+    if (choice?.finish_reason === 'length') throw new Error('truncated reply')
+    const verdict = parseSensitivityVerdict(choice?.message?.content)
     if (!verdict) throw new Error('no verdict in reply')
     await logDecision($, `sensitivity: ${verdict} (model)`)
     return { verdict, source: 'model' }
   } catch {
-    const verdict = credentialBrief(text) ? 'private' : 'public'
-    await logDecision($, `sensitivity: ${verdict} (fallback word list)`)
-    return { verdict, source: 'fallback' }
+    await logDecision($, 'sensitivity: private (fallback)')
+    return { verdict: 'private', source: 'fallback' }
   }
 }
 

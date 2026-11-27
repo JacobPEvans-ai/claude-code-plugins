@@ -41,7 +41,7 @@ This plugin is specific to the maintainer's own setup and is not intended for ge
 - **Network work** - Work that needs network access runs only on harness rows.
 - **Public code eligibility** - Code for a verified public repository reaches the sandbox rows only after a
   secret-material scan and a `sensitivity-homelab` decision from the on-host router. A private verdict keeps it off
-  sandbox rows; if the decision call fails, the existing credential word list decides. Code for a private or
+  sandbox rows. Any decision failure keeps the brief off the sandbox executors. Code for a private or
   unverified repository can run on the harness rows as well as Codex.
 - **Known limit** - `modelUsage` reports the alias requested by the child, so the router's own fallback chain must be
   kept free of Anthropic models.
