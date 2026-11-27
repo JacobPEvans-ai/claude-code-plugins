@@ -1454,6 +1454,15 @@ describe('harness executor', () => {
     expect(w.calls.filter((call) => call.argv[0] === 'claude')).toHaveLength(1)
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex', skipped: { 'homelab-harness': 'failed', 'host-harness': 'failed' } })
   })
+  test('a turn-limit harness exit is logged as task_failed while non-JSON exits remain failed', async () => {
+    const turnLimit = world({ env: gateways, harnessExit: 1, harnessStdout: '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":101}' })
+    await turnLimit.agent()
+    expect(routeEvents(turnLimit).find((line) => line.event === 'outcome' && line.executor === 'homelab-harness')).toMatchObject({ end: 'task_failed' })
+
+    const nonJson = world({ env: gateways, harnessExit: 1, harnessStdout: 'not JSON' })
+    await nonJson.agent()
+    expect(routeEvents(nonJson).find((line) => line.event === 'outcome' && line.executor === 'homelab-harness')).toMatchObject({ end: 'failed' })
+  })
 })
 
 describe('network work', () => {
@@ -2726,12 +2735,43 @@ describe('routed attempt outcomes', () => {
     expect(outcomes).toEqual([{ executor: 'codex', end: 'failed', ts_ms: NOW - MIN, ended_ms: NOW - MIN }])
   })
 
+  test('attempt history keeps task_failed outcomes', () => {
+    const outcomes = attemptHistory(lines([ended('homelab-harness', 'task_failed', NOW - MIN)]), NOW)
+    expect(outcomes).toEqual([{ executor: 'homelab-harness', end: 'task_failed', ts_ms: NOW - MIN, ended_ms: NOW - MIN }])
+  })
+
   test('three failures in the last hour skip for 30 minutes after the newest one', () => {
     const outcomes = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN), ended('routed-worker', 'timeout', NOW - 20 * MIN),
       ended('routed-worker', 'failed', NOW - 10 * MIN)]), NOW)
     expect(recentAttemptFailures(outcomes, 'routed-worker', NOW)).toBe(true)
     expect(recentAttemptFailures(outcomes, 'routed-worker', NOW + 20 * MIN - 1)).toBe(true)
     expect(recentAttemptFailures(outcomes, 'routed-worker', NOW + 20 * MIN)).toBe(false)
+  })
+
+  test('three failed attempts still start the cooldown', () => {
+    const outcomes = attemptHistory(lines([ended('homelab-harness', 'failed', NOW - 30 * MIN), ended('homelab-harness', 'failed', NOW - 20 * MIN),
+      ended('homelab-harness', 'failed', NOW - 10 * MIN)]), NOW)
+    expect(recentAttemptFailures(outcomes, 'homelab-harness', NOW)).toBe(true)
+  })
+
+  test('task_failed attempts do not count toward the cooldown', () => {
+    const taskFailures = attemptHistory(lines([ended('homelab-harness', 'task_failed', NOW - 30 * MIN), ended('homelab-harness', 'task_failed', NOW - 20 * MIN),
+      ended('homelab-harness', 'task_failed', NOW - 10 * MIN)]), NOW)
+    expect(recentAttemptFailures(taskFailures, 'homelab-harness', NOW)).toBe(false)
+
+    const mixedFailures = attemptHistory(lines([ended('homelab-harness', 'failed', NOW - 30 * MIN), ended('homelab-harness', 'failed', NOW - 20 * MIN),
+      ended('homelab-harness', 'task_failed', NOW - 10 * MIN)]), NOW)
+    expect(recentAttemptFailures(mixedFailures, 'homelab-harness', NOW)).toBe(false)
+  })
+
+  test('a turn-limit exit in the shared attempt log leaves the harness lane open for other sessions', () => {
+    const sharedLog = lines([ended('homelab-harness', 'task_failed', NOW - 30 * MIN), ended('homelab-harness', 'task_failed', NOW - 20 * MIN),
+      ended('homelab-harness', 'task_failed', NOW - 10 * MIN)])
+    expect(recentAttemptFailures(attemptHistory(sharedLog, NOW), 'homelab-harness', NOW)).toBe(false)
+
+    const sharedLogWithFailures = lines([...sharedLog, ended('homelab-harness', 'failed', NOW - 9 * MIN),
+      ended('homelab-harness', 'failed', NOW - 8 * MIN), ended('homelab-harness', 'failed', NOW - 7 * MIN)])
+    expect(recentAttemptFailures(attemptHistory(sharedLogWithFailures, NOW), 'homelab-harness', NOW)).toBe(true)
   })
 
   test('failures older than an hour do not count and a newer success clears the skip', () => {

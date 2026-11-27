@@ -342,6 +342,13 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
     const childArgv = cwd ? ['/bin/sh', '-c', 'cd "$1" && shift && exec "$@"', 'sh', cwd, ...argv] : argv
     const result = await runChild($, childArgv, prompt, timeoutMs, env)
     if (result.exitCode !== 0) {
+      try {
+        const stdout: unknown = JSON.parse(result.stdout)
+        if (stdout !== null && typeof stdout === 'object' && !Array.isArray(stdout) &&
+          (stdout as { subtype?: unknown }).subtype === 'error_max_turns') end = 'task_failed'
+      } catch {
+        // Non-JSON output remains an executor failure.
+      }
       failure = `harness exited with code ${result.exitCode}${childDetail(result.stderr)}`
     } else {
       const checked = checkHarnessResult(JSON.parse(result.stdout), row.model!)
