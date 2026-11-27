@@ -343,6 +343,12 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
     const result = await runChild($, childArgv, prompt, timeoutMs, env)
     if (result.exitCode !== 0) {
       failure = `harness exited with code ${result.exitCode}${childDetail(result.stderr)}`
+      // A turn-limit stop says the task was too big, not that the executor failed; it must not trip the cooldown.
+      try {
+        if ((JSON.parse(result.stdout) as { subtype?: unknown })?.subtype === 'error_max_turns') end = 'task_failed'
+      } catch {
+        // Unparseable stdout leaves the attempt failed.
+      }
     } else {
       const checked = checkHarnessResult(JSON.parse(result.stdout), row.model!)
       if (checked.ok) {

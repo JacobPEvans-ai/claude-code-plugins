@@ -436,9 +436,10 @@ export function jobHistory(lines: readonly string[], nowMs: number): { pending: 
   }
   return { pending: placed.filter((p) => !outcomes.has(p.job)).reverse().slice(0, 5), outcomes: [...outcomes.values()] }
 }
-export type AttemptEnd = 'ok' | 'failed' | 'timeout' | 'violation'
+// 'task_failed': the task stopped at its turn limit; it says nothing about executor health.
+export type AttemptEnd = 'ok' | 'failed' | 'timeout' | 'violation' | 'task_failed'
 export type AttemptOutcome = { executor: Executor; end: AttemptEnd; ts_ms: number; ended_ms: number }
-const ATTEMPT_ENDS: readonly AttemptEnd[] = ['ok', 'failed', 'timeout', 'violation']
+const ATTEMPT_ENDS: readonly AttemptEnd[] = ['ok', 'failed', 'timeout', 'violation', 'task_failed']
 // From decision-log lines: one outcome per completed Codex attempt, across repositories. Lines with invalid
 // executor IDs, ends, timestamps, or stamps more than a minute in the future are ignored.
 export function attemptHistory(lines: readonly string[], nowMs: number): AttemptOutcome[] {
