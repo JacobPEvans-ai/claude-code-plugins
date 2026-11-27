@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.85.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.84.1...v6.85.0) (2026-11-27)
+
+
+### Features
+
+* **jpe-ai-delegation:** let harness rows take private code beside Codex ([#936](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/936)) ([c455c5f](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/c455c5fa2c21ec98c8a4864e281615ab34c2721f))
+
 ## [6.84.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.84.0...v6.84.1) (2026-11-27)
 
 
