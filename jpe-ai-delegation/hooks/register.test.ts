@@ -2726,6 +2726,22 @@ describe('routed attempt outcomes', () => {
     expect(outcomes).toEqual([{ executor: 'codex', end: 'failed', ts_ms: NOW - MIN, ended_ms: NOW - MIN }])
   })
 
+  test('attempt history keeps turn-limit task_failed outcomes', () => {
+    const outcomes = attemptHistory(lines([ended('routed-worker', 'task_failed', NOW - MIN)]), NOW)
+    expect(outcomes).toEqual([{ executor: 'routed-worker', end: 'task_failed', ts_ms: NOW - MIN, ended_ms: NOW - MIN }])
+  })
+
+  test('turn-limit stops never start or extend the cooldown', () => {
+    const stops = attemptHistory(lines([ended('routed-worker', 'task_failed', NOW - 30 * MIN), ended('routed-worker', 'task_failed', NOW - 20 * MIN),
+      ended('routed-worker', 'task_failed', NOW - 10 * MIN)]), NOW)
+    expect(stops).toHaveLength(3)
+    expect(recentAttemptFailures(stops, 'routed-worker', NOW)).toBe(false)
+    const mixed = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN), ended('routed-worker', 'task_failed', NOW - 20 * MIN),
+      ended('routed-worker', 'failed', NOW - 10 * MIN)]), NOW)
+    expect(mixed).toHaveLength(3)
+    expect(recentAttemptFailures(mixed, 'routed-worker', NOW)).toBe(false)
+  })
+
   test('three failures in the last hour skip for 30 minutes after the newest one', () => {
     const outcomes = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN), ended('routed-worker', 'timeout', NOW - 20 * MIN),
       ended('routed-worker', 'failed', NOW - 10 * MIN)]), NOW)
@@ -2757,6 +2773,16 @@ describe('routed attempt outcomes', () => {
     expect(JSON.stringify(outcomes)).not.toContain(prompt)
     expect(JSON.stringify(outcomes)).not.toContain(answer)
     expect(JSON.stringify(outcomes)).not.toContain('PRIVATE_DESCRIPTION_TEXT')
+  })
+
+  test('a turn-limit harness exit logs task_failed and still falls through; a non-JSON exit stays failed', async () => {
+    const maxTurns = world({ env: gateways, harnessExit: 1, harnessStdout: '{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":101}' })
+    expect(text(await maxTurns.agent())).toContain('[routed: codex luna xhigh')
+    expect(routeEvents(maxTurns).filter((line) => line.event === 'outcome').map(({ executor, end }) => [executor, end])).toEqual([['homelab-harness', 'task_failed'], ['host-harness', 'task_failed'], ['codex', 'ok']])
+    expect(maxTurns.writes.some((s) => s.includes('harness failure: harness exited with code 1'))).toBe(true)
+    const plain = world({ env: gateways, harnessExit: 1, harnessStdout: 'not json' })
+    expect(text(await plain.agent())).toContain('[routed: codex luna xhigh')
+    expect(routeEvents(plain).filter((line) => line.event === 'outcome').map(({ executor, end }) => [executor, end])).toEqual([['homelab-harness', 'failed'], ['host-harness', 'failed'], ['codex', 'ok']])
   })
 })
 
