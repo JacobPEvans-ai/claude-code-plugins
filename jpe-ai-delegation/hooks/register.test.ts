@@ -877,6 +877,7 @@ describe('Codex rung', () => {
     expect(runs(w)).toHaveLength(1)
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(w.fetches.map((f) => f.url)).toEqual(['https://api.github.com/repos/owner/project'])
+    expect(sensitivityCalls(w)).toHaveLength(0)
   })
   test('untagged public work still classifies onto Codex Luna', async () => {
     const w = world({ env: gateways })
@@ -1172,7 +1173,7 @@ describe('capped ladder', () => {
     test(`tool-dependent tasks skip chat gateways and are refused when nothing answers: ${task.prompt}`, async () => {
       const w = world({ quota: 1, zcodeAvailable: false, env: gateways })
       expect(text(await w.agent(task))).toBe(refusedText)
-      expect(nonGithub(w).filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
+      expect(nonGithub(w).filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toEqual([])
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -1183,7 +1184,7 @@ describe('capped ladder', () => {
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', kind: { value: 'code', source: 'tag' } })
     expect(w.calls.find((c) => c.argv[1] === 'start')?.env).toEqual({ UNTRUSTED_OK: 'public' })
     expect(w.calls.filter((c) => c.argv[1] !== 'start').every((c) => c.env === undefined)).toBe(true)
-    expect(w.fetches.map((f) => f.url)).toEqual(['https://api.github.com/repos/owner/project', 'https://api.github.com/repos/owner/project/pulls/12'])
+    expect(w.fetches.map((f) => f.url)).toEqual(['https://api.github.com/repos/owner/project', 'http://localhost:8000/v1/chat/completions', 'https://api.github.com/repos/owner/project/pulls/12'])
     expect(w.nextCalls).toEqual([])
   })
   test('AGENT_ROUTE_ZCODE_TOOLS without opencode-qwen skips the qwen row and dispatches zcode plainly', async () => {
@@ -1249,7 +1250,7 @@ describe('capped ladder', () => {
       const w = world({ quota: 1, env: gateways, ...options })
       expect(text(await w.agent(call))).toBe(refusedText)
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toBe(false)
+      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toBe(false)
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -1259,7 +1260,7 @@ describe('capped ladder', () => {
       const w = world({ quota: 1, env: gateways, ...options })
       expect(text(await w.agent(call))).toBe(refusedText)
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toBe(false)
+      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toBe(false)
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -1279,7 +1280,7 @@ describe('capped ladder', () => {
         : 'zcodeTruncated' in options ? { chosen: 'stopped', reason: 'qwen dispatch failed before the job was accepted' }
           : { chosen: 'qwen', reason: 'sandbox job without a verified PR' }
       expect(routeEvents(w).at(-1)).toMatchObject(expected)
-      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toBe(false)
+      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toBe(false)
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -2119,11 +2120,15 @@ describe('routing batch', () => {
   })
   for (const quota of [0, 1]) {
     test(`9: sensitive public-repo code never reaches a sandbox (quota ${quota})`, async () => {
-      const w = world({ quota, env: gateways })
+      const w = world({ quota, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: '{"verdict":"private","reason":"It requires credential rotation."}' } })
       const call = { ...coding, prompt: 'Rotate the auth signing key using placeholders.' }
       const r = await w.agent(call)
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-      expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
+      expect(sensitivityCalls(w)).toHaveLength(1)
+      expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f)).map((f) => f.url)).toEqual([
+        'https://api.github.com/repos/owner/project',
+        'http://localhost:8000/v1/chat/completions',
+      ])
       if (quota === 0) expect(text(r)).toContain('codex luna xhigh, class bulk-complex')
       else {
         expect(text(r)).toBe(refusedText)
