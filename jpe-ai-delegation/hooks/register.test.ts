@@ -2076,6 +2076,27 @@ describe('routing batch', () => {
     expect(sensitivityCalls(vaultToken)).toHaveLength(0)
     expect(routeEvents(vaultToken).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'material' } })
   })
+  for (const [name, value] of [
+    ['hyphenated credential assignment', 'client-secret=Correct-Horse-Battery-Staple-99'],
+    ['underscore credential assignment', 'client_secret=prod_secret_with_underscores_1234567890'],
+    ['dotted credential assignment', 'client.secret=prod.secret.with.dots.1234567890'],
+    ['AWS temporary token', 'ASIAY7EXAMPLE1234567'],
+    ['Google or Gemini API key', `AIza${'A'.repeat(35)}`],
+    ['Vault batch token', `hvb.${'h'.repeat(20)}`],
+    ['Vault recovery token', `hvr.${'r'.repeat(20)}`],
+    ['Hugging Face token', `hf_${'f'.repeat(30)}`],
+    ['Slack app token', `xapp-${'a'.repeat(20)}`],
+    ['Slack xoxe token', `xoxe-${'x'.repeat(20)}`],
+  ] as const) {
+    test(`secret material ${name} never reaches the sensitivity model or a sandbox`, async () => {
+      const w = world({ quota: 1, env: gateways })
+      await w.agent({ ...coding, prompt: `Use ${value} for this code change.` })
+      expect(sensitivityCalls(w)).toHaveLength(0)
+      expect(routeEvents(w).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'material' } })
+      expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
+      expect(w.writes.join('')).not.toContain(value)
+    })
+  }
   test('non-code text keeps the local route without a sensitivity decision', async () => {
     const w = world({ quota: 1, env: gateways })
     expect(text(await w.agent(textTask))).toContain('[routed: local small]')

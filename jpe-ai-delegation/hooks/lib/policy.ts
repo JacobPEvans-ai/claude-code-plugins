@@ -81,10 +81,14 @@ export const mandatoryLabel = (text: string): Label | undefined => /\b(auth(?:en
 // Words that keep a brief off the public sandbox rows even in a verified public repository; labelling stays with
 // mandatoryLabel.
 export const credentialBrief = (text: string): boolean => /\b(auth(?:entication|orization)?|secrets?|credentials?|tokens?|passwords?|keys?)\b/i.test(text)
-const SECRET_MATERIAL = /-----BEGIN [A-Z0-9][A-Z0-9 ]*-----|\bghp_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bxox[abp]-[A-Za-z0-9-]{12,}\b|\bAKIA[A-Z0-9]{16}\b|\bsk-[A-Za-z0-9_-]{20,}\b|\bhvs\.[A-Za-z0-9_-]{12,}\b/i
-const SECRET_ASSIGNMENT = /\b[A-Za-z0-9_.-]*(?:key|token|secret|password)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?[A-Za-z0-9+/]{32,}={0,2}["']?(?![A-Za-z0-9+/=])/i
+const SECRET_MATERIAL = /-----BEGIN [A-Z0-9][A-Z0-9 ]*-----|\bghp_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bxox[abp]-[A-Za-z0-9-]{12,}\b|\bAKIA[A-Z0-9]{16}\b|\bASIA[A-Z0-9]{16}\b|\bAIza[A-Za-z0-9_-]{35}\b|\bsk-[A-Za-z0-9_-]{20,}\b|\bhv[bsr]\.[A-Za-z0-9_-]{12,}\b|\bhf_[A-Za-z0-9_-]{12,}\b|\bxapp-[A-Za-z0-9-]{12,}\b|\bxoxe-[A-Za-z0-9-]{12,}\b/i
+const SECRET_ASSIGNMENT = /\b[A-Za-z0-9_.-]*(?:passphrase|password|passwd|credential|authorization|auth|key|token|secret)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([A-Za-z0-9+/_\-.]{16,}={0,2})["']?(?![A-Za-z0-9+/=_\-.])/gi
+const hasSecretAssignment = (text: string): boolean => [...text.matchAll(SECRET_ASSIGNMENT)].some(([, raw]) => {
+  const value = raw.replace(/={1,2}$/, '')
+  return value.length >= 32 || (value.length >= 16 && /[-_.]/.test(value))
+})
 // Actual values never go to the sensitivity model; mere credential words and placeholders are not secret material.
-export const secretMaterial = (text: string): boolean => SECRET_MATERIAL.test(text) || SECRET_ASSIGNMENT.test(text)
+export const secretMaterial = (text: string): boolean => SECRET_MATERIAL.test(text) || hasSecretAssignment(text)
 export const forbiddenModel = (model: string | undefined): boolean => /(?:^|[-/\s])(sonnet|opus|fable)(?:$|[-/\s\d])/i.test(model ?? '')
 // Stricter, for an executor row's model only: any spelling that contains a Claude model name once case and every
 // non-alphanumeric are removed. Over-blocking an odd router name is the safe direction; agent type names keep forbiddenModel.
