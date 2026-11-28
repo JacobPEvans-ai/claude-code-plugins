@@ -82,7 +82,13 @@ decision to `~/.claude/ai-delegation.log`:
    `quota_missing`. Unknown is never scored as empty or full, and the route
    event lists each reason under `quota_unknown`. An executor with a
    live window at 95% or more drops out. The hook then ranks the eligible
-   executors at call time.
+   executors at call time: promotions by pace first, then, for the
+   `bulk-complex`, `complex`, `plan` and `deep` classes, the remaining rows by
+   pace with the harness rows last, and, for every other class and no class,
+   the harness rows followed by the remaining rows by pace. Within one pace
+   group, rows with a reading rank by distance (furthest under the line
+   first, least over first); rows with no reading rank by price times peak
+   multiplier, lowest first, then in table order.
    Executor rows live in `hooks/lib/policy.ts`, each with
    transport, trust and `private_ok`. `~/.config/ai-delegation/executors.json` (a JSON
    array of rows) overrides rows by `id` and adds new ones; invalid rows are
@@ -115,6 +121,9 @@ decision to `~/.claude/ai-delegation.log`:
    partial work` (one per timed-out executor, comma separated), together with
    the uncommitted paths `git status --porcelain` found in the directory the
    child worked in, so the lead checks partial work before re-sending the job.
+   When an eligible executor was skipped for `recent_failures`, the refusal
+   ends with `Retry after <time>.` (the earliest such executor's cooldown
+   end, ISO 8601 UTC) and the route line carries `retry_after_ms`.
    Every routed result carries a `[fell through: <executor>: <reason>; ...]`
    line directly above its footer when earlier executors were tried, and the
    route line carries the same `reasons` map keyed by executor. Only
@@ -155,8 +164,10 @@ ended jobs there ended `no_commit`, `timeout`, `rate_limited` or `refused`. The
 skip lasts 60 minutes after the newest failure's `ended_ms`, or until the end of
 that UTC hour when it is `rate_limited`. Status reads on a failed start stop
 after 15 seconds.
-Codex attempts also write one `outcome` line with `executor`, `end`
-(`ok`, `failed` or `timeout`) and `ended_ms`; prompt and answer text are never logged there.
+Routed child attempts also write one `outcome` line with `executor`, `end`
+(`ok`, `failed`, `timeout` or `cancelled`) and `ended_ms`; prompt and answer text are never logged there.
+A child an outside signal stopped, as when the session is restarted, ends `cancelled`; it is no executor fault and
+never counts toward that cooldown.
 Across repositories, three failures or timeouts in 60 minutes with no newer success skip an executor for 30 minutes after its newest failure.
 The hook never merges. Leak-scan the exact PR head before any human merge.
 
