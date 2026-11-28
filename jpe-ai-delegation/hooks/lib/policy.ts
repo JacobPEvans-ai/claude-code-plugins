@@ -462,10 +462,18 @@ export function jobHistory(lines: readonly string[], nowMs: number): { pending: 
   }
   return { pending: placed.filter((p) => !outcomes.has(p.job)).reverse().slice(0, 5), outcomes: [...outcomes.values()] }
 }
-// 'task_failed': the task stopped at its turn limit; it says nothing about executor health.
-export type AttemptEnd = 'ok' | 'failed' | 'timeout' | 'violation' | 'task_failed'
+// 'task_failed': the task stopped at its turn limit; it says nothing about executor health. 'cancelled': a child an
+// outside signal stopped (the session was restarted, say); like 'task_failed' it is no executor fault.
+export type AttemptEnd = 'ok' | 'failed' | 'timeout' | 'violation' | 'task_failed' | 'cancelled'
 export type AttemptOutcome = { executor: Executor; end: AttemptEnd; ts_ms: number; ended_ms: number }
-const ATTEMPT_ENDS: readonly AttemptEnd[] = ['ok', 'failed', 'timeout', 'violation', 'task_failed']
+const ATTEMPT_ENDS: readonly AttemptEnd[] = ['ok', 'failed', 'timeout', 'violation', 'task_failed', 'cancelled']
+// The end of one child CLI run. The hook's own time limit always wins as `timeout`; a child that ended on a signal the
+// hook did not send is `cancelled`; a run that answered is `ok`; every other run is `failed`.
+export function attemptEnd(timedOut: boolean, child: { exitCode?: number; signal?: string | null } | undefined, answered: boolean): AttemptEnd {
+  if (timedOut) return 'timeout'
+  if (child?.signal) return 'cancelled'
+  return answered && child?.exitCode === 0 ? 'ok' : 'failed'
+}
 // From decision-log lines: one outcome per completed Codex attempt, across repositories. Lines with invalid
 // executor IDs, ends, timestamps, or stamps more than a minute in the future are ignored.
 export function attemptHistory(lines: readonly string[], nowMs: number): AttemptOutcome[] {
@@ -480,14 +488,20 @@ export function attemptHistory(lines: readonly string[], nowMs: number): Attempt
   }
   return outcomes
 }
+// The wall-clock time in milliseconds at which an executor's three-failure cooldown ends, or undefined while it is not
+// cooling down. `cancelled` ends never count: a child an outside signal stopped is no fault of the executor.
+export function attemptCooldownEnd(outcomes: readonly AttemptOutcome[], executor: Executor, nowMs: number): number | undefined {
+  const failures = outcomes.filter((o) => o.executor === executor && (o.end === 'failed' || o.end === 'timeout') && nowMs - o.ended_ms <= 3_600_000)
+  if (failures.length < 3) return undefined
+  const newest = failures.reduce((a, b) => a.ended_ms >= b.ended_ms ? a : b)
+  if (outcomes.some((o) => o.executor === executor && o.end === 'ok' && o.ended_ms > newest.ended_ms)) return undefined
+  const until = newest.ended_ms + 1_800_000
+  return nowMs < until ? until : undefined
+}
 // Three failed or timed-out attempts in the last hour cool an executor down for 30 minutes after its newest failure,
 // unless a newer successful attempt cleared that failure streak.
 export function recentAttemptFailures(outcomes: readonly AttemptOutcome[], executor: Executor, nowMs: number): boolean {
-  const failures = outcomes.filter((o) => o.executor === executor && (o.end === 'failed' || o.end === 'timeout') && nowMs - o.ended_ms <= 3_600_000)
-  if (failures.length < 3) return false
-  const newest = failures.reduce((a, b) => a.ended_ms >= b.ended_ms ? a : b)
-  if (outcomes.some((o) => o.executor === executor && o.end === 'ok' && o.ended_ms > newest.ended_ms)) return false
-  return nowMs < newest.ended_ms + 1_800_000
+  return attemptCooldownEnd(outcomes, executor, nowMs) !== undefined
 }
 const FAILED_ENDS: readonly JobEnd[] = ['no_commit', 'timeout', 'rate_limited', 'refused']
 // True while two or more of an executor's last three ended jobs for this repository (by end anchor) failed: 60 minutes
@@ -678,11 +692,17 @@ export function parseCodexQuota(stdout: string, threshold: number): CodexQuotaRe
   }
 }
 
+// Classes a harness row cannot finish inside the child's time limit: a hard task would spend the whole limit there and
+// fall through, so these rank the harness rows last.
+const HARD_CLASSES: readonly Label[] = ['bulk-complex', 'complex', 'plan', 'deep']
+
 // Promotions first; then usage pace, exhausted rows skipped. At/below-line readings by distance (furthest under
-// first), unknown in table order, then over-line readings (least over first); use each executor's smallest distance
-// across windows. Pace line: 0 at start, 100 one day before reset (at reset for <2-day windows); effective score is
-// route-line telemetry only.
-export function rankRows(rows: readonly ExecutorRow[], scores: Partial<Record<Executor, Score>>, nowMs: number): { order: Executor[]; skipped: Record<Executor, SkipReason>; effective: Record<Executor, number | null> } {
+// first), unknown rows by price times peak multiplier at this moment, then over-line readings (least over first); use
+// each executor's smallest distance across windows. For `bulk-complex`, `complex`, `plan` and `deep` the harness rows
+// run last, after the regular rows; for every other class and without a class they run between the promotions and the
+// regular rows. A harness row is never dropped, only moved. Pace line: 0 at start, 100 one day before reset (at reset
+// for <2-day windows); effective score is route-line telemetry only.
+export function rankRows(rows: readonly ExecutorRow[], scores: Partial<Record<Executor, Score>>, nowMs: number, label?: Label): { order: Executor[]; skipped: Record<Executor, SkipReason>; effective: Record<Executor, number | null> } {
   const skipped: Record<Executor, SkipReason> = {}
   const effective: Record<Executor, number | null> = {}
   const open = rows.filter((r) => {
@@ -704,8 +724,12 @@ export function rankRows(rows: readonly ExecutorRow[], scores: Partial<Record<Ex
     const compareDistance = (a: ExecutorRow, b: ExecutorRow): number => distance(b)! - distance(a)! || tableIndex.get(a.id)! - tableIndex.get(b.id)!
     const under = group.filter((r) => distance(r) !== undefined && distance(r)! >= 0).sort(compareDistance)
     const unknown = group.filter((r) => distance(r) === undefined)
+      .sort((a, b) => a.price * peakMultiplier(a, nowMs) - b.price * peakMultiplier(b, nowMs) || tableIndex.get(a.id)! - tableIndex.get(b.id)!)
     const over = group.filter((r) => distance(r) !== undefined && distance(r)! < 0).sort(compareDistance)
     return [...under, ...unknown, ...over]
   }
-  return { order: [...orderByPace(promos), ...harness, ...orderByPace(regular)].map((r) => r.id), skipped, effective }
+  const harnessLast = label !== undefined && HARD_CLASSES.includes(label)
+  const middle = harnessLast ? orderByPace(regular) : harness
+  const last = harnessLast ? harness : orderByPace(regular)
+  return { order: [...orderByPace(promos), ...middle, ...last].map((r) => r.id), skipped, effective }
 }

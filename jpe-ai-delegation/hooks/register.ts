@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, parseSensitivityVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, secretMaterial, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand, SENSITIVITY, SENSITIVITY_ALIAS, SENSITIVITY_OUTPUT_TOKENS, SENSITIVITY_TIMEOUT_MS } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptCooldownEnd, attemptEnd, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, parseSensitivityVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, secretMaterial, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand, SENSITIVITY, SENSITIVITY_ALIAS, SENSITIVITY_OUTPUT_TOKENS, SENSITIVITY_TIMEOUT_MS } from './lib/policy'
 import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, HarnessMcpConfig, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
@@ -64,6 +64,11 @@ const timeoutReason = (timeoutMs: number, suffix: string): string => `timeout af
 const exitReason = (code: number, stderr: string): string => {
   const line = childFirstLine(stderr)
   return boundedReason(`exit ${code}${line ? `: ${line}` : ''}`)
+}
+// A child an outside signal stopped: the signal with the redacted first line of its error output.
+const signalReason = (signal: string, stderr: string): string => {
+  const line = childFirstLine(stderr)
+  return boundedReason(`signal ${signal}${line ? `: ${line}` : ''}`)
 }
 // The uncommitted paths a timed-out child left in the directory it worked in, as one suffix for its reason, so the
 // session checks partial work before it re-sends the job. A failed or slow status read adds nothing.
@@ -300,14 +305,15 @@ function quotaLine(score: Score | undefined): string {
   return score.exhausted ? 'codex-quota: exhausted' : 'codex-quota: available'
 }
 
-// One streamed child: its exit code and output once it ends, or a rejection when it is still running after timeoutMs,
-// with the child killed.
-async function runChild($: Engine, argv: string[], input: string, timeoutMs: number, env: Record<string, string>): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+// One streamed child: its exit code, the signal that ended it, and its output once it ends, or a rejection when it is
+// still running after timeoutMs, with the child killed.
+async function runChild($: Engine, argv: string[], input: string, timeoutMs: number, env: Record<string, string>): Promise<{ exitCode: number; signal: string | null; stdout: string; stderr: string }> {
   const child = $.process.spawn({ argv, input, env })
   const read = (async () => {
     const out = { stdout: '', stderr: '' }
     for await (const piece of child) out[piece.stream] += piece.text
-    return { exitCode: (await child.result).code ?? -1, ...out }
+    const ended = await child.result
+    return { exitCode: ended.code ?? -1, signal: ended.signal ?? null, ...out }
   })()
   try {
     return await withTimeout($, read, timeoutMs)
@@ -336,18 +342,22 @@ async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: 
       const argv = codexArgv(sandbox, codexRoute, model, outputFile)
       if (cwd) argv.splice(2, 0, '-C', cwd)
       const r = await runChild($, argv, prompt, timeoutMs, { PATH: await childPath($) })
-      if (r.exitCode !== 0) {
+      if (r.signal) {
+        end = attemptEnd(false, r, false)
+        failure = `codex exec ended on signal ${r.signal}${childDetail(r.stderr)}`
+        reason = signalReason(r.signal, r.stderr)
+      } else if (r.exitCode !== 0) {
         failure = `codex exec exited with code ${r.exitCode}${childDetail(r.stderr)}`
         reason = exitReason(r.exitCode, r.stderr)
       } else {
         const text = ((await $.fs.read(outputFile)) as string).trim()
-        if (text) { end = 'ok'; return { text } }
+        if (text) { end = attemptEnd(false, r, true); return { text } }
         failure = 'codex exec returned an empty final message'
       }
     }
   } catch (err) {
     if (isTimeout(err)) {
-      end = 'timeout'
+      end = attemptEnd(true, undefined, false)
       reason = timeoutReason(timeoutMs, await uncommittedSuffix($, cwd ?? (await $.session.cwd())))
     }
     failure = `codex exec invocation or output read failed: ${errText(err)}`
@@ -380,7 +390,11 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
     const argv = harnessArgv(sandbox, cwd ?? await $.session.cwd(), mcp)
     const childArgv = cwd ? ['/bin/sh', '-c', 'cd "$1" && shift && exec "$@"', 'sh', cwd, ...argv] : argv
     const result = await runChild($, childArgv, prompt, timeoutMs, env)
-    if (result.exitCode !== 0) {
+    if (result.signal) {
+      end = attemptEnd(false, result, false)
+      failure = `harness ended on signal ${result.signal}${childDetail(result.stderr)}`
+      reason = signalReason(result.signal, result.stderr)
+    } else if (result.exitCode !== 0) {
       failure = `harness exited with code ${result.exitCode}${childDetail(result.stderr)}`
       reason = exitReason(result.exitCode, result.stderr)
       // A turn-limit stop says the task was too big, not that the executor failed; it must not trip the cooldown.
@@ -392,7 +406,7 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
     } else {
       const checked = checkHarnessResult(JSON.parse(result.stdout), row.model!)
       if (checked.ok) {
-        end = 'ok'
+        end = attemptEnd(false, result, true)
         return { text: checked.text }
       }
       failure = checked.reason
@@ -403,7 +417,7 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
     }
   } catch (error) {
     if (isTimeout(error)) {
-      end = 'timeout'
+      end = attemptEnd(true, undefined, false)
       reason = timeoutReason(timeoutMs, await uncommittedSuffix($, cwd ?? (await $.session.cwd())))
     }
     failure = `harness invocation failed: ${errText(error)}`
@@ -608,15 +622,31 @@ const NETWORK_NO_EXECUTOR_REASON = 'network work: no harness executor answered'
 const MCP_NO_EXECUTOR = 'agent needs its MCP servers; no harness executor answered'
 const CLAUDE_SUBAGENT_DENY = 'Claude subagents are disabled by operator order; delegate through a non-Claude executor'
 
+// The earliest time in milliseconds at which an executor skipped for its recent failures may run again, or undefined
+// when none was skipped for that reason or its cooldown cannot be dated without a clock reading. Only the routed-attempt
+// cooldown dates a retry; `cancelled` ends never cool an executor down.
+async function retryAfterMs($: Engine, event: RouteEvent): Promise<number | undefined> {
+  const cooling = Object.keys(event.skipped).filter((id) => event.skipped[id] === 'recent_failures')
+  const now = cooling.length ? await clockNow($) : null
+  if (now === null) return undefined
+  const outcomes = attemptHistory(await decisionLogLines($), now)
+  const ends = cooling.flatMap((id) => { const end = attemptCooldownEnd(outcomes, id, now); return end === undefined ? [] : [end] })
+  return ends.length ? Math.min(...ends) : undefined
+}
+
 // A ladder with no answer is refused, never handed to the session. When an executor was cut off at its time limit,
 // the refusal names it and its partial work instead of "nothing ran", so the lead checks that work before re-sending
-// the job; the note above the footer names every executor that was tried, with its reason. The route line's reason
-// keeps its existing values.
+// the job; the note above the footer names every executor that was tried, with its reason. When an eligible executor
+// sat out earlier failures, the refusal also names when a retry can work. The route line's reason keeps its existing
+// values.
 async function refuse($: Engine, e: AgentCall, event: RouteEvent, text: string, reason: string): Promise<unknown> {
   const timedOut = event.fell_through_from.filter((id) => event.reasons[id]?.startsWith('timeout after '))
-  const said = text === NO_EXECUTOR && timedOut.length
+  const retry = await retryAfterMs($, event)
+  if (retry !== undefined) event.retry_after_ms = retry
+  const named = text === NO_EXECUTOR && timedOut.length
     ? `no non-Claude executor answered; ${timedOut.join(', ')} timed out and may have left partial work`
     : text
+  const said = retry === undefined ? named : `${named} Retry after ${new Date(retry).toISOString()}.`
   const note = fellThroughLine(event)
   await logRoute($, event, 'stopped', reason)
   return routedResult(e, 'ai-delegation-policy', note ? `FAIL | router | ${said}\n\n${note}` : `FAIL | router | ${said}`, '[routing stopped]', 0)
@@ -922,6 +952,7 @@ type RouteEvent = {
   skipped: Record<string, SkipReason>; jobs: JobRecord[]
   quota_unknown: Record<string, QuotaReason>; quota_source: Record<string, string>
   sensitivity?: SensitivityDecision
+  retry_after_ms?: number
 }
 
 // One line naming every executor that was tried before the one that answered, each with its failure reason.
@@ -1198,7 +1229,14 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
   const { scores } = quota
   event.quota_unknown = quota.unknown
   event.quota_source = quota.sources
-  const ranked = rankRows(rows, scores, now)
+  // One label classification per spawn, asked by whichever rung runs first.
+  let labelPromise: Promise<Label> | undefined
+  const rungLabel = (): Promise<Label> => (labelPromise ??= classify($, e))
+  // The class decides the ladder's shape only when a harness group and a regular group both stand: a hard class
+  // (bulk-complex, complex, plan, deep) runs the harness rows last, and any other class keeps them first. Without both
+  // groups the class cannot change the order, so the classification waits for the rung that needs it.
+  const classMatters = rows.some((r) => r.transport === 'harness' && r.kind !== 'promotion') && rows.some((r) => r.transport !== 'harness' && r.kind !== 'promotion')
+  const ranked = rankRows(rows, scores, now, classMatters ? await rungLabel() : undefined)
   Object.assign(skipped, ranked.skipped)
   // A codex row the native read could not decide is not a candidate, whatever its feed telemetry says.
   for (const [id, why] of Object.entries(quota.nativeSkips)) skipped[id] = why
@@ -1219,9 +1257,6 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
   let outcomes: JobOutcome[] | undefined
   const tools = await sandboxTools($)
   let harnessDown = false
-  // One label classification per spawn, asked by whichever rung runs first.
-  let labelPromise: Promise<Label> | undefined
-  const rungLabel = (): Promise<Label> => (labelPromise ??= classify($, e))
   for (const executor of ranked.order.filter((id) => quota.nativeSkips[id] === undefined)) {
     const row = rows.find((r) => r.id === executor)!
     if (row.transport === 'harness' && harnessViolations.has(executor)) {
