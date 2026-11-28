@@ -6,19 +6,12 @@ setup() {
   LADDER="$REPO_ROOT/jpe-ai-delegation/skills/delegation-ladder/ladder.json"
 }
 
-@test "ladder data matches the delegation-ladder table" {
-  markdown_ladders="$(awk -F '|' '
-    /^\| `[^`]+` \|/ {
-      kind=$2
-      gsub(/[ `]/, "", kind)
-      ladder=$3
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", ladder)
-      gsub(/ -> /, "|", ladder)
-      print kind "|" ladder
-    }
-  ' "$SKILL" | sort)"
-  data_ladders="$(jq -r '.kinds | to_entries[] | [.key, ([.value.rungs[].name] | join("|"))] | join("|")' "$LADDER" | sort)"
-  [ "$markdown_ladders" = "$data_ladders" ]
+@test "ladder kinds match the delegation-ladder table" {
+  # The skill lists each kind and leaves the order of executors to the hook; the next test pins the order in the data.
+  markdown_kinds="$(awk -F '|' '/^\| `[^`]+` \|/ { kind=$2; gsub(/[ `]/, "", kind); print kind }' "$SKILL" | sort)"
+  data_kinds="$(jq -r '.kinds | keys[]' "$LADDER" | sort)"
+  [ -n "$markdown_kinds" ]
+  [ "$markdown_kinds" = "$data_kinds" ]
 }
 
 @test "ladder contains the exact binding order, eligibility gates and no prohibited models" {
