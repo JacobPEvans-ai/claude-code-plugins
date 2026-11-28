@@ -42,8 +42,8 @@ proof, and its next item.
 
 ## 5. Fan-out
 
-A worker with independent items runs them concurrently through its own
-cheaper executors. Size the fan-out to the work and to measured machine
+A worker with independent items runs them concurrently; the delegation hook
+places each spawn. Size the fan-out to the work and to measured machine
 load, never to a fixed cap. The skill's "Substrate resilience" section
 governs live availability and limits; this rule adds utilization, not new
 caps.

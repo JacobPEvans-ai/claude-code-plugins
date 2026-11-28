@@ -1,6 +1,6 @@
 ---
 name: fast-subagent
-description: Use for any routine/checkable step — summarize, extract, classify, reformat, draft boilerplate, first pass over a file — every such step, all session. Sends to the router's fast-subagent role, which picks backend/fallback. Names no model ids.
+description: Use for any routine/checkable step — summarize, extract, classify, reformat, draft boilerplate, first pass over a file — every such step, all session. One command; the router's fast role picks the backend and its fallbacks. Names no model ids.
 license: MIT
 metadata:
   version: 1.0.0
@@ -47,10 +47,10 @@ printf '%s\n' "$INSTRUCTION" "$INPUT" | fast-subagent.sh
 relative to this file; it needs only `bash`, `curl`, `jq`). It reads the
 endpoint from the environment — `LLM_ROUTER_URL` + `LLM_ROUTER_TOKEN_FILE`, or
 the local proxy's `OPENAI_API_BASE_URL` / `LITELLM_LOCAL_BASE_URL` +
-`LITELLM_LOCAL_KEY` — sends one bounded request for role `small`, prints the
-answer on stdout and `model=<what answered> fallbacks=<n>` on stderr.
+`LITELLM_LOCAL_KEY` — sends one bounded request to the router's fast role,
+prints the answer on stdout and `model=<what answered> fallbacks=<n>` on stderr.
 
-Options: `--model medium` (a capability name), `--system TEXT`,
+Options: `--model CAPABILITY` (override the fast role's capability name), `--system TEXT`,
 `--prefix-file FILE` (shared leading text or saved JSON `messages` array),
 `--save-chain FILE` (persist `messages` + reply for chained KV cache reuse),
 `--session-id ID` (pin LiteLLM `session_affinity` to the warm slot),
@@ -80,14 +80,15 @@ the chain at any time without a converge, a rebuild, or a change to this skill.
 So: never name a physical model, never assume which backend answered, and read
 `model=` on stderr when it matters. `fallbacks=1` or more means the first rung
 was busy and the router moved on; that is the chain working, not an error.
+Shared doctrine: `prompt://dryvist/auto-ai-agent/model-delegation`.
 
 ## 4. When it says no
 
 | Exit | Meaning | Do |
 | --- | --- | --- |
-| 2 | No endpoint in the environment | Do the step yourself and say so. Do not look for a provider key. |
+| 2 | No endpoint in the environment | Say so and record the step as a tracked task. Do not look for a provider key. |
 | 3 | `401`/`403` | Report it. Never retry with a different credential. |
-| 4 | Still busy after one `Retry-After` wait | Do the step yourself or pick another entry from `local-subagents` §3, and say which. Do not loop. |
+| 4 | Still busy after one `Retry-After` wait | Report it; re-send the step later, split it, or record it as a tracked task. Do not loop. |
 | 5 | Transport or request failure | Report the message; a `400` naming an unknown model means the role is not seeded on this router yet. |
 | 7 | `200` but no text (budget spent on reasoning, `finish_reason=length`) | Retry once with a higher `--max-tokens`; never treat empty output as an answer. |
 
@@ -98,7 +99,7 @@ courtesy: the timeout is what guarantees release, so never depend on it.
 ## 5. Report what you used
 
 Name the role and, when the reader needs it, the `model=` line, for each
-delegated result. Say when you fell back to doing the step yourself.
+delegated result. Say when a step did not place and what you did instead.
 
 ## Related skills
 

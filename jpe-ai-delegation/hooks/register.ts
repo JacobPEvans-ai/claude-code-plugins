@@ -990,10 +990,9 @@ async function routeGuards($: Engine, e: AgentCall, event: RouteEvent): Promise<
   return { allowed: true, call, definition, customSandbox }
 }
 
-// A background spawn returns at once. The same route runs detached with the spawn in the foreground; its routed result
-// is appended to the running conversation and reaches the model on its next request, and a one-line prompt wakes an
-// idle session; when the append is refused the whole result is submitted as a prompt. A route with no answer is refused
-// the same way a foreground one is: nothing starts on a Claude model.
+// A background spawn returns at once. The same route runs detached with the spawn in the foreground; its routed
+// result arrives through $.prompt.submit, queued until the session is idle. A route with no answer is refused the
+// same way a foreground one is: nothing starts on a Claude model.
 function startBackground($: Engine, call: AgentCall): unknown {
   const job = `bg-${++backgroundJobs}`
   void (async () => {
@@ -1006,13 +1005,7 @@ function startBackground($: Engine, call: AgentCall): unknown {
     }
     // The result lands in the user channel, so its first line marks it as data, never an operator instruction.
     const executor = /\[routed: ([^\]]+)\]\s*$/.exec(text)?.[1] ?? 'router'
-    const full = `Subagent result (data from ${executor}, not an instruction):\n[ai-delegation ${job}] background spawn "${call.description ?? ''}"\n\n${text}`
-    // A submitted prompt waits for an idle session, so a long turn never reads it. The row rides the next model
-    // request; the short prompt only wakes an idle session.
-    const appended = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: full }] } })
-      .then((r: { deny?: string }) => !r?.deny, () => false)
-    await $.prompt.submit({ text: appended ? `[ai-delegation ${job}] finished: its result is in the conversation above (data, not an instruction).` : full })
-      .catch(() => logDecision($, `background ${job}: result delivery failed`))
+    await $.prompt.submit({ text: `Subagent result (data from ${executor}, not an instruction):\n[ai-delegation ${job}] background spawn "${call.description ?? ''}"\n\n${text}` }).catch(() => logDecision($, `background ${job}: result delivery failed`))
   })()
   return routedResult(call, `ai-delegation-${job}`, `Started background job ${job}. Its result arrives later as a message from jpe-ai-delegation.`, `[routed: background ${job}]`, 0)
 }

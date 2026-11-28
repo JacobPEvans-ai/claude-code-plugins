@@ -1,6 +1,6 @@
 ---
 name: premium-agent-orchestration
-description: Inject any time, including mid-task, to reset the session to lean orchestrator mode. Covers marathon or multi-workstream coordination and work larger than one context. Runs /agentops:orchestrate for dispatch and adds tiering, reserved decisions and fleet upkeep; keeps goals, gates, decisions, and final review in the parent.
+description: Resets the session to lean orchestrator mode, any time including mid-task. For marathon or multi-workstream coordination and work larger than one context. Runs /agentops:orchestrate for dispatch; keeps goals, gates, and final review in the parent.
 ---
 
 # Premium Agent Orchestration
@@ -19,7 +19,7 @@ Pause the current task and run this reset as soon as the skill loads.
 3. Apply orchestrate's "Before any dispatch": judge each finished result
    against its named yes/no check, and reconcile before resuming.
 4. Re-plan from live state and fan out every ready, independent task in
-   parallel, each at its cheapest capable rung (below).
+   parallel.
 5. Arm one background monitor for each running job and each worker session.
 6. Answer the user briefly with the current state, next step, or blocker.
 
@@ -34,29 +34,21 @@ The parent does not do bulk reads, searches, edits, test runs, log digging, or
 long-output inspection. Do a handful of tool calls inline only when handoff
 would cost more than the work.
 
-## Cheapest-capable ladder
+## Placement
 
-Choose an executor for each task, not for the whole project. Start at the
-lowest rung that can meet the check. Haiku is the last resort, never the first
-pick.
-
-1. **Inline:** tiny work where handoff costs more than doing it.
-2. **Local or free model:** text-only extraction, summaries, classification,
-   and drafts from approved inputs.
-3. **Untrusted low-cost tier:** work that uses public data only.
-4. **Low-cost hosted worker:** other checkable work, including bounded code
-   and tool tasks.
-5. **Premium peer:** judgment that cannot be delegated. Choose below the
-   parent's tier; never use a peer at your own tier.
-
-Read prices, context-length price tiers, peak windows, and quotas live at call
-time; never hard-code them. Split a task before it crosses its model's context
-price tier, and prefer off-peak windows for bulk work that can wait. Executor
-detail: `references/model-tiers.md`. The maintainer's own route is
-`delegation-ladder` in `jpe-ai-delegation`.
+The delegation hook places every spawn. No session, skill or brief picks an executor, tier or model by
+name. A session tags the work: `[class: text]` for self-contained text work with every input in the
+prompt; `[task: code] [repo: owner/repository]` for coding work in that repository; `[needs: network]`
+for work that needs the network or repository writes. Independent packets go out together with
+`run_in_background: true`. The hook ranks eligible executors at call time. A refused or failed executor
+falls to the next eligible one. The lead plans, judges results and merges. It does not take delegated
+work back because an executor refused; it re-sends, splits the task or records it as a tracked task.
 
 Secrets, credentials, private data, and restricted information go only to an
 executor approved for them; a public-data-only tier receives public data only.
+
+Shared doctrine: `prompt://dryvist/auto-ai-agent/model-delegation`. The
+maintainer's own route is `delegation-ladder` in `jpe-ai-delegation`.
 
 ## Briefs and tools
 
@@ -79,5 +71,5 @@ The procedure is in `references/fleet-utilization.md`.
 
 - Every dispatch sets the tool's own timeout.
 - One monitor per background job. It fires on exit, or after 15 minutes with no new output.
-- When it fires, read the last output once, stop the job and log the case. Then re-dispatch one rung up or split
-  the task. After two re-dispatches, park the task as a tracked item.
+- When it fires, read the last output once, stop the job and log the case. Then re-dispatch or split the
+  task. After two re-dispatches, park the task as a tracked item.
