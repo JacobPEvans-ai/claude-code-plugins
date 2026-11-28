@@ -397,6 +397,22 @@ export function hasChatTemplateLeak(text: string): boolean {
   return /<\|[\w]+\|>|<\/?(?:tool_call|function_call)>/i.test(text)
 }
 
+// The input and output tokens a final executor output reports; total tokens are their sum. A counter that is missing,
+// malformed, not finite or negative reads as zero, so an unreadable usage block never fails a route and nothing is
+// estimated.
+export type TokenUsage = { input_tokens: number; output_tokens: number }
+const tokenCount = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0)
+// The `usage` block of a headless CLI JSON result, else zeros.
+export function usageFromClaudeResult(json: unknown): TokenUsage {
+  const usage = (json as { usage?: unknown } | null)?.usage
+  return { input_tokens: tokenCount((usage as { input_tokens?: unknown } | null)?.input_tokens), output_tokens: tokenCount((usage as { output_tokens?: unknown } | null)?.output_tokens) }
+}
+// The OpenAI-style `usage` block of a chat completion, else zeros.
+export function usageFromChatResponse(json: unknown): TokenUsage {
+  const usage = (json as { usage?: unknown } | null)?.usage
+  return { input_tokens: tokenCount((usage as { prompt_tokens?: unknown } | null)?.prompt_tokens), output_tokens: tokenCount((usage as { completion_tokens?: unknown } | null)?.completion_tokens) }
+}
+
 // Override rows merge over the table by id; new ids append. Invalid rows are dropped and named in `rejected`.
 export function mergeExecutorRows(base: readonly ExecutorRow[], override: unknown): { rows: ExecutorRow[]; rejected: string[] } {
   const rows = [...base]
@@ -514,6 +530,37 @@ export function recentFailures(outcomes: readonly JobOutcome[], executor: Execut
   const until = newest.end === 'rate_limited' ? (Math.floor(newest.ended_ms / 3_600_000) + 1) * 3_600_000 : newest.ended_ms + 3_600_000
   return nowMs < until
 }
+
+// Foreground attempts on one executor row run one at a time inside one hook process. Each call chains first in, first
+// out behind the row's current tail; a call arriving on a free row runs at once. `onWait` carries the number of calls
+// already on the row (the one running plus those waiting) when a call has to wait. A thrown or rejected attempt
+// settles its own link, so the queue always drains, and a row's entry is dropped once no call remains on it.
+export type RowQueue = {
+  run: <T>(row: Executor, work: () => Promise<T>, onWait?: (ahead: number) => void) => Promise<T>
+  depth: (row: Executor) => number
+}
+export function newRowQueue(): RowQueue {
+  const rows = new Map<Executor, { tail: Promise<unknown>; depth: number }>()
+  return {
+    run: <T>(row: Executor, work: () => Promise<T>, onWait?: (ahead: number) => void): Promise<T> => {
+      const place = rows.get(row)
+      if (place && onWait) onWait(place.depth)
+      const link = (place?.tail ?? Promise.resolve()).then(work)
+      const settled = link.then(() => undefined, () => undefined)
+      const entry = place ?? { tail: settled, depth: 0 }
+      entry.tail = settled
+      entry.depth += 1
+      rows.set(row, entry)
+      void settled.then(() => {
+        entry.depth -= 1
+        if (entry.depth === 0 && rows.get(row) === entry) rows.delete(row)
+      })
+      return link
+    },
+    depth: (row: Executor) => rows.get(row)?.depth ?? 0,
+  }
+}
+
 // Rows that may see this task; private work only reaches `private_ok` rows, so a paid row (never `private_ok`) sees
 // only public work. Expired promotions drop out, and so does a paid row whose remaining budget (by key alias) is not a
 // finite number (unknown) or is at or below zero (spent).

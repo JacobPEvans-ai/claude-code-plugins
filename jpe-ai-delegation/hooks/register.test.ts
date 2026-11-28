@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
 import { attemptCooldownEnd, attemptEnd, attemptHistory, checkHarnessResult, endAnchor, forbiddenHarnessModel, hasChatTemplateLeak, harnessArgv, harnessEnv, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
 import { register } from './register'
-import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseSensitivityVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand, secretMaterial, SENSITIVITY, SENSITIVITY_ALIAS, SENSITIVITY_OUTPUT_TOKENS, SENSITIVITY_TIMEOUT_MS } from './lib/policy'
+import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, newRowQueue, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseSensitivityVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand, usageFromChatResponse, usageFromClaudeResult, secretMaterial, SENSITIVITY, SENSITIVITY_ALIAS, SENSITIVITY_OUTPUT_TOKENS, SENSITIVITY_TIMEOUT_MS } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import { RECORDED_QUOTA } from './fixtures/quota-instant-query'
 import type { HarnessMcpConfig } from './lib/policy'
@@ -23,13 +23,16 @@ type World = {
   codexQuota?: 'absent' | 'hangs' | 'refused' | string
   env?: Record<string, string>; definition?: string; files?: Record<string, string>; fsThrows?: boolean; worktreeExit?: number; temporaryExit?: number
   childHangs?: boolean | string
+  holdChild?: string[]
+  runThrows?: string[]
   gitStatus?: string
   harnessAnswer?: string; harnessStdout?: string; harnessStdouts?: string[]; harnessStderr?: string; harnessExit?: number; harnessElapsedMs?: number; harnessSignal?: string
+  harnessAnswerByStdin?: Record<string, string>
   repository?: unknown; properties?: unknown; githubPrivateAuth?: boolean; githubAuthDenied?: boolean; pr?: unknown; githubError?: boolean; githubInvalidJson?: boolean
   originUrl?: string; pathRealpaths?: Record<string, string>; pathGitRoots?: Record<string, string>; unresolvedPaths?: string[]; pathKinds?: Record<string, 'file' | 'directory'>
   zcodeExit?: number; zcodeOutput?: string; zcodeAvailable?: boolean; zcodeThrows?: boolean; zcodeTruncated?: boolean
   sandboxRuns?: Record<string, { exit: number; output: string }>; jobStatus?: Record<string, unknown>; statusHangs?: boolean; statusExit?: number; logTail?: unknown[]; tailTruncated?: boolean
-  gatewayTimeout?: boolean; gatewayStatus?: Record<string, number>; gatewayAnswer?: Record<string, string>; gatewayInvalidJson?: boolean; gatewayThrows?: boolean; classifierTimeout?: boolean
+  gatewayTimeout?: boolean; gatewayStatus?: Record<string, number>; gatewayAnswer?: Record<string, string>; gatewayUsage?: Record<string, number>; gatewayInvalidJson?: boolean; gatewayThrows?: boolean; classifierTimeout?: boolean
   quotaUrl?: string | null; quotaTimeout?: boolean; quotaText?: string; quotaSampleAge?: number; quotaStatus?: number
   quotaFileTypes?: Record<string, 'file' | 'directory' | 'symlink'>
   readThrows?: string; readHangs?: string
@@ -71,6 +74,11 @@ function world(w: World = {}) {
   const spawned: string[][] = []
   const killed: string[][] = []
   const logs: string[] = []
+  // Live children per program name, its peak, held children awaiting their release, and every armed clock timer.
+  const childCounts: Record<string, number> = {}
+  const childPeaks: Record<string, number> = {}
+  const heldReleases: (() => void)[] = []
+  const timers: { delay: number; at: number }[] = []
   const env: Record<string, string> = { HOME: '/home/test', ...(w.quotaUrl === null ? {} : { AGENT_QUOTA_QUERY_URL: w.quotaUrl ?? QUOTA_BASE }), ...w.env }
   let output = ''
   let clockNow = w.now ?? 1_000_000
@@ -113,7 +121,7 @@ function world(w: World = {}) {
         return { message: args.message, id: 'row-1' }
       },
     },
-    clock: { now: async () => { if (w.clockThrows) throw new Error('clock failed'); if (w.clockHangs) return new Promise<number>(() => {}); return clockNow }, after: (delay: number, callback: () => void) => { const firesChildTimeout = delay === 1_500_000 && hungChild; if (firesChildTimeout) hungChild = false; if (firesChildTimeout || (w.clockHangs && delay === 5_000) || (w.gatewayTimeout && (delay === 20_000 || (delay >= 60_000 && delay < 1_500_000))) || (w.quotaTimeout && delay === 3_000) || (w.classifierTimeout && delay === 20_000) || (w.codexQuota === 'hangs' && delay === 15_000) || (w.statusHangs && (delay === 3_000 || delay === 15_000))) Promise.resolve().then(callback); if (w.collectorTimeout && delay === 5_000) timeoutCallbacks.set(delay, callback); return { cancel() { timeoutCallbacks.delete(delay) } } } },
+    clock: { now: async () => { if (w.clockThrows) throw new Error('clock failed'); if (w.clockHangs) return new Promise<number>(() => {}); return clockNow }, after: (delay: number, callback: () => void) => { timers.push({ delay, at: clockNow }); const firesChildTimeout = delay === 1_500_000 && hungChild; if (firesChildTimeout) hungChild = false; if (firesChildTimeout || (w.clockHangs && delay === 5_000) || (w.gatewayTimeout && (delay === 20_000 || (delay >= 60_000 && delay < 1_500_000))) || (w.quotaTimeout && delay === 3_000) || (w.classifierTimeout && delay === 20_000) || (w.codexQuota === 'hangs' && delay === 15_000) || (w.statusHangs && (delay === 3_000 || delay === 15_000))) Promise.resolve().then(callback); if (w.collectorTimeout && delay === 5_000) timeoutCallbacks.set(delay, callback); return { cancel() { timeoutCallbacks.delete(delay) } } } },
     ui: { log: (line: string) => logs.push(line) },
     plugin: { name: 'jpe-ai-delegation', root: w.pluginRoot ?? '' },
     fs: {
@@ -128,6 +136,7 @@ function world(w: World = {}) {
     },
     process: { run: async (argv: string[], init?: { stdin?: string; env?: Record<string, string>; timeoutMs?: number }) => {
       calls.push({ argv, stdin: init?.stdin, env: init?.env, timeoutMs: init?.timeoutMs })
+      if (w.runThrows?.includes(argv[0])) throw new Error('subprocess failed to start')
       if (argv[0] === 'tee' && w.teeThrows) throw new Error('log write failed')
       if (argv[0] === 'tee') { if ((w.teeExit ?? 0) === 0) writes.push(init?.stdin ?? ''); return { ...RAN, exitCode: w.teeExit ?? 0 } }
       if (argv[0] === 'mktemp') return { ...RAN, exitCode: w.temporaryExit ?? 0, stdout: argv[1] === '-d' ? '/tmp/worktree' : '/tmp/final' }
@@ -157,10 +166,11 @@ function world(w: World = {}) {
         return { ...RAN, exitCode: w.codexExit ?? 0, stderr: w.codexStderr ?? '' }
       }
       if (argv[0] === 'claude') {
-        if (w.harnessAnswer === undefined && w.harnessStdout === undefined && w.harnessStdouts === undefined && w.harnessExit === undefined && w.harnessSignal === undefined) return RAN
+        if (w.harnessAnswer === undefined && w.harnessStdout === undefined && w.harnessStdouts === undefined && w.harnessExit === undefined && w.harnessSignal === undefined && w.harnessAnswerByStdin === undefined) return RAN
         clockNow += w.harnessElapsedMs ?? 0
         const harnessStdout = w.harnessStdouts?.[harnessRunCount++] ?? w.harnessStdout
-        return { ...RAN, exitCode: w.harnessSignal ? -1 : w.harnessExit ?? 0, signal: w.harnessSignal, stderr: w.harnessStderr ?? '', stdout: harnessStdout ?? JSON.stringify({ is_error: false, subtype: 'success', result: w.harnessAnswer, modelUsage: { [init?.env?.ANTHROPIC_MODEL ?? 'medium']: {} } }) }
+        const byStdin = w.harnessAnswerByStdin?.[init?.stdin ?? '']
+        return { ...RAN, exitCode: w.harnessSignal ? -1 : w.harnessExit ?? 0, signal: w.harnessSignal, stderr: w.harnessStderr ?? '', stdout: harnessStdout ?? JSON.stringify({ is_error: false, subtype: 'success', result: byStdin ?? w.harnessAnswer, modelUsage: { [init?.env?.ANTHROPIC_MODEL ?? 'medium']: {} } }) }
       }
       if (argv[0] === 'codex-quota') {
         if (w.codexQuota === undefined || w.codexQuota === 'absent') throw new Error('spawn codex-quota ENOENT')
@@ -228,7 +238,7 @@ function world(w: World = {}) {
       const status = w.gatewayStatus?.[body.model] ?? 200
       // Sensitivity succeeds publicly by default; tests for model failures set the failure explicitly.
       const defaultAnswer = body.model === SENSITIVITY_ALIAS ? DEFAULT_PUBLIC_SENSITIVITY : 'gateway result'
-      return { ok: status === 200, text: w.gatewayInvalidJson ? '{' : JSON.stringify({ choices: [{ finish_reason: w.gatewayFinish ?? 'stop', message: { content: w.gatewayAnswer?.[body.model] ?? defaultAnswer } }] }) }
+      return { ok: status === 200, text: w.gatewayInvalidJson ? '{' : JSON.stringify({ choices: [{ finish_reason: w.gatewayFinish ?? 'stop', message: { content: w.gatewayAnswer?.[body.model] ?? defaultAnswer } }], ...(w.gatewayUsage ? { usage: w.gatewayUsage } : {}) }) }
     } },
     model: { complete: async (input: unknown) => { modelCalls.push(input); return { isAnswered: true, text: w.answer ?? '' } } },
     agent: { spawn: async (args: unknown) => { agentSpawns.push(args); return { agentId: 'agent-1' } } },
@@ -238,12 +248,29 @@ function world(w: World = {}) {
       set: async (key: string, value: unknown) => { storeMap.set(key, value) },
     },
   }
-  // A streamed child answers from the same fixtures as process.run, in one stdout and one stderr piece.
+  // A streamed child answers from the same fixtures as process.run, in one stdout and one stderr piece. A child whose
+  // program is in `holdChild` waits for `releaseChild` (first held, first released) and reads its fixture at release,
+  // while the live-count and peak records show how many children of one program ran at the same time.
   ;($.process as Record<string, unknown>).spawn = (req: { argv: string[]; input?: string; env?: Record<string, string> }) => {
     spawned.push(req.argv)
+    if (w.runThrows?.includes(req.argv[0])) throw new Error('subprocess failed to start')
+    // Harness children of different rows run the same program; the row's model alias keeps their counts separate.
+    const kind = req.env?.ANTHROPIC_MODEL ? `${req.argv[0]}/${req.env.ANTHROPIC_MODEL}` : req.argv[0]
+    childCounts[kind] = (childCounts[kind] ?? 0) + 1
+    childPeaks[kind] = Math.max(childPeaks[kind] ?? 0, childCounts[kind] ?? 0)
+    const markEnd = () => { childCounts[kind] = Math.max((childCounts[kind] ?? 1) - 1, 0) }
     const hung = w.childHangs === true || w.childHangs === req.argv[0]
     if (hung) hungChild = true
-    const ran = hung ? new Promise<never>(() => {}) : $.process.run(req.argv, { stdin: req.input, env: req.env, timeoutMs: 1_500_000 }) as Promise<{ exitCode: number; signal?: string | null; stdout: string; stderr: string }>
+    type ChildResult = { exitCode: number; signal?: string | null; stdout: string; stderr: string }
+    const ran: Promise<ChildResult> = hung ? new Promise<never>(() => {})
+      : w.holdChild?.includes(req.argv[0]) ? new Promise<ChildResult>((resolve) => {
+        heldReleases.push(() => {
+          const r = $.process.run(req.argv, { stdin: req.input, env: req.env, timeoutMs: 1_500_000 }) as ChildResult
+          markEnd()
+          resolve(r)
+        })
+      })
+      : ($.process.run(req.argv, { stdin: req.input, env: req.env, timeoutMs: 1_500_000 }) as Promise<ChildResult>).then((r) => { markEnd(); return r })
     const stream = (async function* () {
       const r = await ran
       if (r.stdout) yield { stream: 'stdout', text: r.stdout }
@@ -251,7 +278,7 @@ function world(w: World = {}) {
       return { code: r.exitCode, signal: r.signal ?? null }
     })()
     // defineProperties, not assignment: the runtime's frozen generator prototype makes an assigned `return` throw.
-    return Object.defineProperties(stream, { result: { value: ran.then((r) => ({ code: r.exitCode, signal: r.signal ?? null })) }, return: { value: async () => { killed.push(req.argv); clockNow += 1_500_000; return { done: true, value: undefined } } } })
+    return Object.defineProperties(stream, { result: { value: ran.then((r) => ({ code: r.exitCode, signal: r.signal ?? null })) }, return: { value: async () => { killed.push(req.argv); markEnd(); clockNow += 1_500_000; return { done: true, value: undefined } } } })
   }
   async function invoke(event: string, e: unknown, core: unknown = { result: { content: [{ text: 'core result' }] } }) {
     const handler = handlers.get(event)!
@@ -262,6 +289,7 @@ function world(w: World = {}) {
     }
   }
   return { agentSpawns, submitted, appended, spawned, killed, calls, writes, storeMap, fetches, quotaFetches, quotaHeaders, allFetches, fsTouches, fsReads, fsStats, modelCalls, nextCalls, logs, invoke, setNow: (ms: number) => { clockNow = ms },
+    childCounts, childPeaks, timers, releaseChild: () => { heldReleases.shift()?.() }, heldCount: () => heldReleases.length,
     agent: (e: Record<string, unknown> = {}) => invoke('tool.call', { tool: 'Agent', description: '[class: standard]', prompt: 'Implement the change.', ...e }),
   }
 }
@@ -3589,5 +3617,293 @@ describe('route telemetry content and bounds', () => {
     expect(event.skipped.qwen).toBe('failed')
     expect(event.fell_through_from).toContain('qwen')
     expect(event).toMatchObject(refusedRoute)
+  })
+})
+
+describe('row queue', () => {
+  const settle = async () => { for (let i = 0; i < 5000; i++) await Promise.resolve() }
+  test('one attempt per row, first in first out, with the count ahead, and a free row runs at once', async () => {
+    const q = newRowQueue()
+    const order: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const waited: number[] = []
+    const a = q.run('row', async () => { order.push('a-start'); await gate; order.push('a-end'); return 'A' })
+    const b = q.run('row', async () => { order.push('b-start'); return 'B' }, (ahead) => waited.push(ahead))
+    await settle()
+    expect(order).toEqual(['a-start'])
+    expect(waited).toEqual([1])
+    expect(q.depth('row')).toBe(2)
+    release()
+    expect(await a).toBe('A')
+    expect(await b).toBe('B')
+    expect(order).toEqual(['a-start', 'a-end', 'b-start'])
+    await settle()
+    expect(q.depth('row')).toBe(0)
+  })
+  test('different rows run independently and a thrown attempt frees its row for the next call', async () => {
+    const q = newRowQueue()
+    let thrown: unknown
+    try { await q.run('r2', async () => { throw new Error('boom') }) } catch (error) { thrown = error }
+    expect((thrown as Error).message).toBe('boom')
+    await settle()
+    expect(q.depth('r2')).toBe(0)
+    expect(await q.run('r1', async () => 'r1')).toBe('r1')
+    expect(await q.run('r2', async () => 'again')).toBe('again')
+    await settle()
+    expect(q.depth('r1')).toBe(0)
+    expect(q.depth('r2')).toBe(0)
+  })
+})
+
+describe('foreground executor queue', () => {
+  const settle = async () => { for (let i = 0; i < 5000; i++) await Promise.resolve() }
+  const byStdin = (answers: Record<string, string>) => Object.fromEntries(Object.entries(answers).map(([prompt, result]) => [prompt, JSON.stringify({ is_error: false, subtype: 'success', result, modelUsage: { 'medium-homelab': {}, medium: {} } })]))
+  const queuedLines = (w: ReturnType<typeof world>) => routeEvents(w).filter((line) => line.event === 'queued')
+
+  test('two foreground spawns on one executor row run one at a time and both return their own answers', async () => {
+    const w = world({ env: gateways, holdChild: ['claude'], harnessAnswerByStdin: byStdin({ 'First task.': 'first answer', 'Second task.': 'second answer' }) })
+    const pa = w.agent({ prompt: 'First task.' })
+    const pb = w.agent({ prompt: 'Second task.' })
+    await settle()
+    // The first call holds the row alone; the second has not started an attempt.
+    expect(w.childCounts['claude/medium-homelab']).toBe(1)
+    expect(w.childPeaks['claude/medium-homelab']).toBe(1)
+    expect(w.heldCount()).toBe(1)
+    expect(queuedLines(w)).toHaveLength(1)
+    expect(queuedLines(w)[0]).toMatchObject({ event: 'queued', executor: 'homelab-harness', ahead: 1 })
+    w.releaseChild()
+    const ra = await pa
+    expect(text(ra)).toContain('first answer')
+    expect(text(ra)).toContain('[routed: harness medium-homelab]')
+    // The second call starts only after the first ends, and still never shares the row.
+    expect(w.spawned.filter((argv) => argv[0] === 'claude')).toHaveLength(2)
+    expect(w.childCounts['claude/medium-homelab']).toBe(1)
+    expect(w.childPeaks['claude/medium-homelab']).toBe(1)
+    w.releaseChild()
+    expect(text(await pb)).toContain('second answer')
+    expect(w.childPeaks['claude/medium-homelab']).toBe(1)
+    expect(queuedLines(w)).toHaveLength(1)
+  })
+
+  test('a failed first attempt still lets the queued call run and answer', async () => {
+    const w = world({
+      env: gateways,
+      holdChild: ['claude'],
+      // An empty harness answer fails its check, so the first call's harness attempts fail on both rows.
+      harnessAnswerByStdin: { 'First task.': '', 'Second task.': 'second answer' },
+      gatewayAnswer: { small: 'codex answer' },
+    })
+    const pa = w.agent({ prompt: 'First task.' })
+    const pb = w.agent({ prompt: 'Second task.' })
+    await settle()
+    expect(w.childCounts['claude/medium-homelab']).toBe(1)
+    w.releaseChild()
+    await settle()
+    // The first call's harness attempts fail on both rows and it falls through to Codex; the queued call's own
+    // attempt holds the freed row alone before it answers.
+    expect(w.childPeaks['claude/medium-homelab']).toBe(1)
+    w.releaseChild()
+    await settle()
+    w.releaseChild()
+    await settle()
+    const [ra, rb] = await Promise.all([pa, pb])
+    expect(text(ra)).toContain('[routed: codex')
+    expect(text(rb)).toContain('second answer')
+    expect(w.childPeaks['claude/medium-homelab']).toBe(1)
+    expect(queuedLines(w)).toMatchObject([{ executor: 'homelab-harness', ahead: 1 }])
+  })
+
+  test('a timed-out first attempt still lets the queued call run and return', async () => {
+    const w = world({ env: gateways, childHangs: 'claude', gatewayAnswer: { small: 'codex answer' } })
+    const pa = w.agent({ prompt: 'First task.' })
+    const pb = w.agent({ prompt: 'Second task.' })
+    // Each harness attempt is cut off at its time limit; the kill counts toward the row-pace window, so each call
+    // skips its second harness row, and both calls still fall through to Codex and return.
+    expect(text(await pa)).toContain('[routed: codex')
+    expect(text(await pb)).toContain('[routed: codex')
+    expect(w.killed.filter((argv) => argv[0] === 'claude')).toHaveLength(2)
+    expect(queuedLines(w).filter((line) => line.executor === 'homelab-harness')).toMatchObject([{ ahead: 1 }])
+    expect(routeEvents(w).filter((line) => line.event === 'outcome' && line.end === 'timeout').map((line) => line.executor)).toEqual(['homelab-harness', 'homelab-harness'])
+  })
+
+  test('a thrown first attempt never sticks the queue: the queued call still runs and answers', async () => {
+    const w = world({ env: gateways, runThrows: ['mktemp'], harnessAnswerByStdin: byStdin({ 'Second task.': 'second answer' }) })
+    const pa = w.agent({ prompt: 'First task.', isolation: 'worktree' })
+    const pb = w.agent({ prompt: 'Second task.' })
+    // The first call's attempt dies before any child starts; its route is refused, and the queued call takes the row.
+    expect(text(await pa)).toBe(refusedText)
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'stopped', reason: NO_EXECUTOR_AFTER_ERROR_REASON })
+    expect(text(await pb)).toContain('second answer')
+    expect(w.spawned.filter((argv) => argv[0] === 'claude')).toHaveLength(1)
+    expect(queuedLines(w)).toMatchObject([{ executor: 'homelab-harness', ahead: 1 }])
+  })
+
+  test('two foreground spawns whose first rows differ run at the same time', async () => {
+    const w = world({ env: gateways, holdChild: ['claude', 'codex'], gatewayAnswer: { small: '' }, harnessAnswerByStdin: byStdin({ 'Implement the change.': 'standard answer' }) })
+    // The text task fails the local rung and lands on the codex row; the standard task starts on the first harness row.
+    const pa = w.agent({ description: '[class: text]', prompt: 'Summarize this supplied text: A small change.' })
+    const pb = w.agent()
+    await settle()
+    expect(w.childCounts['claude/medium-homelab']).toBe(1)
+    expect(w.childCounts['codex']).toBe(1)
+    expect(queuedLines(w)).toEqual([])
+    w.releaseChild()
+    w.releaseChild()
+    const [ra, rb] = await Promise.all([pa, pb])
+    expect(text(ra)).toContain('[routed: codex')
+    expect(text(rb)).toContain('standard answer')
+    expect(text(rb)).toContain('[routed: harness medium-homelab]')
+  })
+
+  test('a background spawn during a foreground attempt starts at once and never queues behind the row', async () => {
+    const w = world({ env: gateways, holdChild: ['claude'], harnessAnswerByStdin: byStdin({ 'First task.': 'first answer', 'Second task.': 'second answer' }) })
+    const pa = w.agent({ prompt: 'First task.' })
+    await settle()
+    expect(w.childCounts['claude/medium-homelab']).toBe(1)
+    expect(text(await w.agent({ prompt: 'Second task.', run_in_background: true }))).toContain('Started background job bg-')
+    await settle()
+    // The detached attempt runs unqueued: two children on the row at once, and the foreground call was not delayed.
+    expect(w.childCounts['claude/medium-homelab']).toBe(2)
+    expect(w.childPeaks['claude/medium-homelab']).toBe(2)
+    w.releaseChild()
+    w.releaseChild()
+    await settle()
+    expect(text(await pa)).toContain('first answer')
+    expect(w.appended.join('\n')).toContain('second answer')
+  })
+
+  test('a queued call arms its own time limit when its attempt starts, not while it waits, and ends ok', async () => {
+    const w = world({ env: gateways, holdChild: ['claude'], harnessAnswerByStdin: byStdin({ 'First task.': 'first answer', 'Second task.': 'second answer' }) })
+    const pa = w.agent({ prompt: 'First task.' })
+    const pb = w.agent({ prompt: 'Second task.' })
+    await settle()
+    // The queued call waits past the routed child limit before its attempt ever starts.
+    w.setNow(1_000_000 + ROUTED_CHILD_TIMEOUT_MS + 500_000)
+    w.releaseChild()
+    expect(text(await pa)).toContain('first answer')
+    await settle()
+    expect(w.timers.filter((t) => t.delay === ROUTED_CHILD_TIMEOUT_MS).map((t) => t.at)).toEqual([1_000_000, 3_000_000])
+    w.releaseChild()
+    expect(text(await pb)).toContain('second answer')
+    expect(routeEvents(w).filter((line) => line.event === 'outcome' && line.executor === 'homelab-harness').map((line) => line.end)).toEqual(['ok', 'ok'])
+  })
+
+  test('each waiting call logs one queued line with the executor and the calls ahead', async () => {
+    const w = world({ env: gateways, holdChild: ['claude'], harnessAnswerByStdin: byStdin({ 'First task.': 'first answer', 'Second task.': 'second answer', 'Third task.': 'third answer' }) })
+    const pa = w.agent({ prompt: 'First task.' })
+    const pb = w.agent({ prompt: 'Second task.' })
+    const pc = w.agent({ prompt: 'Third task.' })
+    await settle()
+    expect(queuedLines(w)).toMatchObject([
+      { event: 'queued', executor: 'homelab-harness', ahead: 1 },
+      { event: 'queued', executor: 'homelab-harness', ahead: 2 },
+    ])
+    for (const [prompt, answer] of [['First task.', 'first answer'], ['Second task.', 'second answer'], ['Third task.', 'third answer']] as const) {
+      w.releaseChild()
+      await settle()
+      const result = await (prompt === 'First task.' ? pa : prompt === 'Second task.' ? pb : pc)
+      expect(text(result)).toContain(answer)
+    }
+    expect(queuedLines(w)).toHaveLength(2)
+  })
+
+  test('a fall-through waits for a busy next row by the same rule and both calls answer', async () => {
+    const failing = JSON.stringify({ is_error: true, subtype: 'error', result: '', modelUsage: { 'medium-homelab': {}, medium: {} } })
+    const ok = (result: string) => JSON.stringify({ is_error: false, subtype: 'success', result, modelUsage: { medium: {} } })
+    const w = world({ env: gateways, holdChild: ['claude'], harnessStdouts: [failing, failing, ok('first answer'), ok('second answer')] })
+    const pa = w.agent({ prompt: 'First task.' })
+    const pb = w.agent({ prompt: 'Second task.' })
+    await settle()
+    // The first call holds the first row; the second call queues behind it there.
+    expect(w.childPeaks['claude/medium-homelab']).toBe(1)
+    expect(queuedLines(w)).toMatchObject([{ executor: 'homelab-harness', ahead: 1 }])
+    w.releaseChild()
+    await settle()
+    w.releaseChild()
+    await settle()
+    // Both first-row attempts failed; the first call now holds the second row and the queued call waits for it there.
+    expect(w.childPeaks['claude/medium-homelab']).toBe(1)
+    expect(w.childPeaks['claude/medium']).toBe(1)
+    expect(queuedLines(w)).toMatchObject([
+      { executor: 'homelab-harness', ahead: 1 },
+      { executor: 'host-harness', ahead: 1 },
+    ])
+    w.releaseChild()
+    const ra = await pa
+    expect(text(ra)).toContain('first answer')
+    expect(text(ra)).toContain('[routed: harness medium]')
+    w.releaseChild()
+    const rb = await pb
+    expect(text(rb)).toContain('second answer')
+    expect(text(rb)).toContain('[routed: harness medium]')
+    expect(w.childPeaks['claude/medium']).toBe(1)
+  })
+})
+
+describe('routed result usage', () => {
+  const harnessJson = (usage: unknown) => JSON.stringify({ is_error: false, subtype: 'success', result: 'done', modelUsage: { medium: {} }, usage })
+  test('usage parsers read their own block shape and read anything else as zero', () => {
+    expect(usageFromClaudeResult({ usage: { input_tokens: 120, output_tokens: 45 } })).toEqual({ input_tokens: 120, output_tokens: 45 })
+    expect(usageFromClaudeResult({ usage: { input_tokens: 'many', output_tokens: -3 } })).toEqual({ input_tokens: 0, output_tokens: 0 })
+    expect(usageFromClaudeResult({})).toEqual({ input_tokens: 0, output_tokens: 0 })
+    expect(usageFromClaudeResult(undefined)).toEqual({ input_tokens: 0, output_tokens: 0 })
+    expect(usageFromChatResponse({ usage: { prompt_tokens: 30, completion_tokens: 12 } })).toEqual({ input_tokens: 30, output_tokens: 12 })
+    expect(usageFromChatResponse({ usage: { prompt_tokens: Number.NaN } })).toEqual({ input_tokens: 0, output_tokens: 0 })
+    expect(usageFromChatResponse({ usage: null })).toEqual({ input_tokens: 0, output_tokens: 0 })
+    expect(usageFromChatResponse('not an object')).toEqual({ input_tokens: 0, output_tokens: 0 })
+  })
+  test('a harness result with usage reports the counters; without one or malformed they stay at zero', async () => {
+    const withUsage = world({ env: gateways, harnessStdout: harnessJson({ input_tokens: 120, output_tokens: 45, cache_read_input_tokens: 10 }) })
+    const r = await withUsage.agent() as any
+    expect(text(r)).toContain('[routed: harness medium-homelab]')
+    expect(r.result.totalTokens).toBe(165)
+    expect(r.result.usage.input_tokens).toBe(120)
+    expect(r.result.usage.output_tokens).toBe(45)
+    const without = world({ env: gateways, harnessAnswer: 'done' })
+    const r2 = await without.agent() as any
+    expect(text(r2)).toContain('[routed: harness medium-homelab]')
+    expect(r2.result.totalTokens).toBe(0)
+    expect(r2.result.usage.input_tokens).toBe(0)
+    expect(r2.result.usage.output_tokens).toBe(0)
+    const malformed = world({ env: gateways, harnessStdout: harnessJson({ input_tokens: 'many', output_tokens: null }) })
+    const r3 = await malformed.agent() as any
+    expect(text(r3)).toContain('done')
+    expect(r3.result.usage.input_tokens).toBe(0)
+    expect(r3.result.usage.output_tokens).toBe(0)
+  })
+  test('a chat completion reports its usage to the router-chat result; without a block it stays at zero', async () => {
+    const OVERRIDE = '/home/test/.config/ai-delegation/executors.json'
+    const flat = { id: 'chat-flat', transport: 'router-chat', model: 'local-only', trust: 'subscription-trusted', private_ok: true, price: 1 }
+    const localDown = { ...gateways, AGENT_ROUTE_ZCODE_TOOLS: '' }
+    const withUsage = world({ quota: 1, env: localDown, gatewayStatus: { small: 500 }, gatewayAnswer: { 'local-only': 'router answer' }, gatewayUsage: { prompt_tokens: 30, completion_tokens: 12, total_tokens: 42 }, files: { [OVERRIDE]: JSON.stringify([flat]) } })
+    const r = await withUsage.agent(textTask) as any
+    expect(text(r)).toContain('[routed: router-chat local-only]')
+    expect(r.result.totalTokens).toBe(42)
+    expect(r.result.usage.input_tokens).toBe(30)
+    expect(r.result.usage.output_tokens).toBe(12)
+    const without = world({ quota: 1, env: localDown, gatewayStatus: { small: 500 }, gatewayAnswer: { 'local-only': 'router answer' }, files: { [OVERRIDE]: JSON.stringify([flat]) } })
+    const r2 = await without.agent(textTask) as any
+    expect(text(r2)).toContain('[routed: router-chat local-only]')
+    expect(r2.result.totalTokens).toBe(0)
+  })
+  test('the local rung reports the usage its chat completion reported', async () => {
+    const w = world({ quota: 1, env: gateways, gatewayAnswer: { small: 'text' }, gatewayUsage: { prompt_tokens: 8, completion_tokens: 3 } })
+    const r = await w.agent({ description: 'quick favor', prompt: 'Summarize this supplied text: A small change.' }) as any
+    expect(text(r)).toContain('[routed: local small]')
+    expect(r.result.totalTokens).toBe(11)
+    expect(r.result.usage).toMatchObject({ input_tokens: 8, output_tokens: 3 })
+  })
+  test('the Codex child and a sandbox job report zeros: their outputs carry no usage here', async () => {
+    const codex = world({ answer: 'codex done' })
+    const r = await codex.agent() as any
+    expect(text(r)).toContain('[routed: codex')
+    expect(r.result.totalTokens).toBe(0)
+    expect(r.result.usage.input_tokens).toBe(0)
+    const sandbox = world({ quota: 1, env: gateways, harnessExit: 1, harnessStdout: 'not json', repository: { visibility: 'public', private: false } })
+    const r2 = await sandbox.agent(coding) as any
+    expect(text(r2)).toContain('[routed: Qwen sandbox')
+    expect(r2.result.totalTokens).toBe(0)
+    expect(r2.result.usage.output_tokens).toBe(0)
   })
 })
