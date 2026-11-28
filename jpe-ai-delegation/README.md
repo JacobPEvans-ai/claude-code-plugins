@@ -17,7 +17,9 @@ This plugin is specific to the maintainer's own setup and is not intended for ge
   command instead (cached for four hours, failures for ten minutes) and skips Codex unless it exits 0 below the
   80-percent used threshold
 - **No Claude rung** - No spawn runs on a Claude model: native custom agents take the executor ladder, and when no
-  non-Claude executor answers the spawn is refused with `no non-Claude executor answered; nothing ran`; an
+  non-Claude executor answers the spawn is refused with `no non-Claude executor answered; nothing ran`, or, when an
+  executor was cut off at its time limit, with that executor named as timed out and likely to have left partial work;
+  every result and route line names each tried-and-failed executor with its reason; an
   `agent.spawn` hook denies tool-started and teammate subagent spawns
 - **Retired agent types** - A type named in the operator's `~/.config/ai-delegation/retired.json` is refused with
   the replacement command its entry names, before any definition is read or executor is called; the plugin ships
