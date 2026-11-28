@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
-import { attemptHistory, checkHarnessResult, endAnchor, forbiddenHarnessModel, hasChatTemplateLeak, harnessArgv, harnessEnv, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
+import { attemptCooldownEnd, attemptEnd, attemptHistory, checkHarnessResult, endAnchor, forbiddenHarnessModel, hasChatTemplateLeak, harnessArgv, harnessEnv, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
 import { register } from './register'
 import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
@@ -24,7 +24,7 @@ type World = {
   env?: Record<string, string>; definition?: string; files?: Record<string, string>; fsThrows?: boolean; worktreeExit?: number; temporaryExit?: number
   childHangs?: boolean | string
   gitStatus?: string
-  harnessAnswer?: string; harnessStdout?: string; harnessStdouts?: string[]; harnessStderr?: string; harnessExit?: number; harnessElapsedMs?: number
+  harnessAnswer?: string; harnessStdout?: string; harnessStdouts?: string[]; harnessStderr?: string; harnessExit?: number; harnessElapsedMs?: number; harnessSignal?: string
   repository?: unknown; properties?: unknown; githubPrivateAuth?: boolean; githubAuthDenied?: boolean; pr?: unknown; githubError?: boolean; githubInvalidJson?: boolean
   originUrl?: string; pathRealpaths?: Record<string, string>; pathGitRoots?: Record<string, string>; unresolvedPaths?: string[]; pathKinds?: Record<string, 'file' | 'directory'>
   zcodeExit?: number; zcodeOutput?: string; zcodeAvailable?: boolean; zcodeThrows?: boolean; zcodeTruncated?: boolean
@@ -155,10 +155,10 @@ function world(w: World = {}) {
         return { ...RAN, exitCode: w.codexExit ?? 0, stderr: w.codexStderr ?? '' }
       }
       if (argv[0] === 'claude') {
-        if (w.harnessAnswer === undefined && w.harnessStdout === undefined && w.harnessStdouts === undefined && w.harnessExit === undefined) return RAN
+        if (w.harnessAnswer === undefined && w.harnessStdout === undefined && w.harnessStdouts === undefined && w.harnessExit === undefined && w.harnessSignal === undefined) return RAN
         clockNow += w.harnessElapsedMs ?? 0
         const harnessStdout = w.harnessStdouts?.[harnessRunCount++] ?? w.harnessStdout
-        return { ...RAN, exitCode: w.harnessExit ?? 0, stderr: w.harnessStderr ?? '', stdout: harnessStdout ?? JSON.stringify({ is_error: false, subtype: 'success', result: w.harnessAnswer, modelUsage: { [init?.env?.ANTHROPIC_MODEL ?? 'medium']: {} } }) }
+        return { ...RAN, exitCode: w.harnessSignal ? -1 : w.harnessExit ?? 0, signal: w.harnessSignal, stderr: w.harnessStderr ?? '', stdout: harnessStdout ?? JSON.stringify({ is_error: false, subtype: 'success', result: w.harnessAnswer, modelUsage: { [init?.env?.ANTHROPIC_MODEL ?? 'medium']: {} } }) }
       }
       if (argv[0] === 'codex-quota') {
         if (w.codexQuota === undefined || w.codexQuota === 'absent') throw new Error('spawn codex-quota ENOENT')
@@ -238,15 +238,15 @@ function world(w: World = {}) {
     spawned.push(req.argv)
     const hung = w.childHangs === true || w.childHangs === req.argv[0]
     if (hung) hungChild = true
-    const ran = hung ? new Promise<never>(() => {}) : $.process.run(req.argv, { stdin: req.input, env: req.env, timeoutMs: 1_500_000 }) as Promise<{ exitCode: number; stdout: string; stderr: string }>
+    const ran = hung ? new Promise<never>(() => {}) : $.process.run(req.argv, { stdin: req.input, env: req.env, timeoutMs: 1_500_000 }) as Promise<{ exitCode: number; signal?: string | null; stdout: string; stderr: string }>
     const stream = (async function* () {
       const r = await ran
       if (r.stdout) yield { stream: 'stdout', text: r.stdout }
       if (r.stderr) yield { stream: 'stderr', text: r.stderr }
-      return { code: r.exitCode, signal: null }
+      return { code: r.exitCode, signal: r.signal ?? null }
     })()
     // defineProperties, not assignment: the runtime's frozen generator prototype makes an assigned `return` throw.
-    return Object.defineProperties(stream, { result: { value: ran.then((r) => ({ code: r.exitCode, signal: null })) }, return: { value: async () => { killed.push(req.argv); clockNow += 1_500_000; return { done: true, value: undefined } } } })
+    return Object.defineProperties(stream, { result: { value: ran.then((r) => ({ code: r.exitCode, signal: r.signal ?? null })) }, return: { value: async () => { killed.push(req.argv); clockNow += 1_500_000; return { done: true, value: undefined } } } })
   }
   async function invoke(event: string, e: unknown, core: unknown = { result: { content: [{ text: 'core result' }] } }) {
     const handler = handlers.get(event)!
@@ -1954,6 +1954,32 @@ describe('usage pace ranking', () => {
     const scores = { zcode: atDistance(-1), codex: atDistance(1) }
     expect(rankRows(rows, scores, now).order).toEqual(['codex', 'opencode-go', 'zcode'])
   })
+  test('hard classes rank harness rows last; other classes and no class keep them first and a promotion leads', () => {
+    const harness = { id: 'x-harness', transport: 'harness', model: 'medium', window: 80000, trust: 'subscription-trusted', private_ok: true, price: 0 }
+    const rows = [
+      harness,
+      { id: 'qwen', transport: 'sandbox', tool: 'opencode-qwen', trust: 'sandbox-public', private_ok: false, price: 1 },
+      { id: 'promo-free', transport: 'sandbox', tool: 'opencode-free', trust: 'sandbox-public', private_ok: false, price: 0, kind: 'promotion', expires: '2030-01-01T00:00:00Z' },
+      { id: 'codex', transport: 'codex', trust: 'subscription-trusted', private_ok: true, quota: 'codex', price: 1 },
+    ]
+    const saturday = Date.parse('2026-11-14T12:00:00Z')
+    for (const label of ['bulk-complex', 'complex', 'plan', 'deep'] as const) expect(rankRows(rows, {}, saturday, label).order).toEqual(['promo-free', 'qwen', 'codex', 'x-harness'])
+    for (const label of ['bulk', 'standard'] as const) expect(rankRows(rows, {}, saturday, label).order).toEqual(['promo-free', 'x-harness', 'qwen', 'codex'])
+    expect(rankRows(rows, {}, saturday).order).toEqual(['promo-free', 'x-harness', 'qwen', 'codex'])
+    expect(rankRows(rows, {}, saturday, 'bulk-complex').skipped).toEqual({})
+  })
+  test('unknown readings rank by price times peak multiplier, then table order', () => {
+    const priced = (id: string, price: number) => ({ id, transport: 'sandbox', tool: `opencode-${id}`, trust: 'sandbox-public', private_ok: false, price })
+    const rows = [priced('a', 3), priced('b', 1), priced('c', 2)]
+    const saturday = Date.parse('2026-11-14T12:00:00Z')
+    expect(rankRows(rows, {}, saturday).order).toEqual(['b', 'c', 'a'])
+    rows[1].peak = [{ days: [6], start_utc: 0, end_utc: 24, multiplier: 4 }]
+    expect(rankRows(rows, {}, saturday).order).toEqual(['c', 'a', 'b'])
+    // Sunday: the peak is off, so the cheapest row leads again.
+    expect(rankRows(rows, {}, Date.parse('2026-11-15T12:00:00Z')).order).toEqual(['b', 'c', 'a'])
+    const tied = [priced('x', 2), priced('y', 1), priced('z', 1)]
+    expect(rankRows(tied, {}, saturday).order).toEqual(['y', 'z', 'x'])
+  })
   test('equal distances and unknown scores keep table order', () => {
     const equal = { qwen: atDistance(30), zcode: atDistance(30), 'opencode-go': atDistance(30), codex: atDistance(30), cursor: atDistance(30) }
     expect(rankRows(EXECUTOR_TABLE, equal, now).order[0]).toBe('homelab-harness')
@@ -2634,6 +2660,25 @@ describe('routed Codex child', () => {
     expect(w.spawned.filter((argv) => argv[0] === 'codex')).toHaveLength(3)
     expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, skipped: { codex: 'recent_failures' } })
   })
+  test('a refusal with an executor skipped for recent failures names when a retry can work', async () => {
+    const now = 1_000_000
+    const w = world({ quota: 1, env: gateways, logTail: [
+      { ts_ms: now - 60_000, event: 'outcome', executor: 'homelab-harness', end: 'failed', ended_ms: now - 60_000 },
+      { ts_ms: now - 50_000, event: 'outcome', executor: 'homelab-harness', end: 'timeout', ended_ms: now - 50_000 },
+      { ts_ms: now - 40_000, event: 'outcome', executor: 'homelab-harness', end: 'failed', ended_ms: now - 40_000 },
+    ] })
+    const result = await w.agent({ description: '[class: standard]', prompt: 'Implement the change.' })
+    // The newest homelab-harness failure ended 40 seconds ago; its cooldown runs 30 minutes from there.
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'stopped', retry_after_ms: 2_760_000, skipped: { 'homelab-harness': 'recent_failures', 'host-harness': 'failed', codex: 'exhausted' } })
+    expect(text(result).split('\n')[0]).toBe('FAIL | router | no non-Claude executor answered; nothing ran Retry after 1970-01-01T00:46:00.000Z.')
+  })
+  test('a refusal without an executor skipped for recent failures names no retry time', async () => {
+    const w = world({ quota: 1, env: gateways })
+    const result = await w.agent({ description: '[class: standard]', prompt: 'Implement the change.' })
+    expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, skipped: { 'homelab-harness': 'failed', 'host-harness': 'failed', codex: 'exhausted' } })
+    expect(routeEvents(w).at(-1).retry_after_ms).toBeUndefined()
+    expect(text(result).startsWith(`FAIL | router | ${NO_EXECUTOR}\n\n[fell through: homelab-harness: `)).toBe(true)
+  })
   test('every child CLI runs with the current profile ahead of the PATH the session started with', async () => {
     const w = world({ quotaUrl: null, codexQuota: 'codex-quota: available {"p":40,"s":null}', env: { ...gateways, USER: 'u', PATH: '/nix/store/stale-launchers/bin:/usr/bin' } })
     await w.agent()
@@ -2696,6 +2741,14 @@ describe('failure reasons', () => {
     expect(result).toContain('[fell through: ')
     expect(result.endsWith('[routing stopped]')).toBe(true)
     expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['homelab-harness', 'codex'] })
+  })
+  test('a child an outside signal stopped ends cancelled and names the signal in its fall-through reason', async () => {
+    const w = world({ env: gateways, harnessSignal: 'SIGTERM' })
+    await w.agent()
+    expect(routeEvents(w).filter((line) => line.event === 'outcome').map(({ executor, end }) => [executor, end]))
+      .toEqual([['homelab-harness', 'cancelled'], ['host-harness', 'cancelled'], ['codex', 'ok']])
+    expect(routeEvents(w).at(-1).reasons['homelab-harness']).toBe('signal SIGTERM')
+    expect(w.writes.join('\n')).toContain('harness failure: harness ended on signal SIGTERM')
   })
   test('a refused ladder without a timeout still says nothing ran and names each failed executor', async () => {
     const w = world({ codexExit: 7, zcodeAvailable: false, env: gateways })
@@ -2924,6 +2977,46 @@ describe('routed attempt outcomes', () => {
     const cleared = attemptHistory(lines([ended('codex', 'failed', NOW - 20 * MIN), ended('codex', 'timeout', NOW - 10 * MIN),
       ended('codex', 'failed', NOW - 5 * MIN), ended('codex', 'ok', NOW - MIN)]), NOW)
     expect(recentAttemptFailures(cleared, 'codex', NOW)).toBe(false)
+  })
+
+  test('attempt history keeps a cancelled end and drops an unknown one', () => {
+    const outcomes = attemptHistory(lines([ended('codex', 'cancelled', NOW - MIN), ended('codex', 'crashed', NOW)]), NOW)
+    expect(outcomes).toEqual([{ executor: 'codex', end: 'cancelled', ts_ms: NOW - MIN, ended_ms: NOW - MIN }])
+  })
+
+  test('cancelled ends never start or complete a failure streak', () => {
+    const cancelled = attemptHistory(lines([ended('routed-worker', 'cancelled', NOW - 30 * MIN), ended('routed-worker', 'cancelled', NOW - 20 * MIN),
+      ended('routed-worker', 'cancelled', NOW - 10 * MIN)]), NOW)
+    expect(cancelled).toHaveLength(3)
+    expect(recentAttemptFailures(cancelled, 'routed-worker', NOW)).toBe(false)
+    const mixed = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN), ended('routed-worker', 'failed', NOW - 20 * MIN),
+      ended('routed-worker', 'cancelled', NOW - 10 * MIN)]), NOW)
+    expect(recentAttemptFailures(mixed, 'routed-worker', NOW)).toBe(false)
+    const failed = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN), ended('routed-worker', 'failed', NOW - 20 * MIN),
+      ended('routed-worker', 'failed', NOW - 10 * MIN)]), NOW)
+    expect(recentAttemptFailures(failed, 'routed-worker', NOW)).toBe(true)
+    const cleared = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN), ended('routed-worker', 'failed', NOW - 20 * MIN),
+      ended('routed-worker', 'failed', NOW - 10 * MIN), ended('routed-worker', 'ok', NOW - MIN)]), NOW)
+    expect(recentAttemptFailures(cleared, 'routed-worker', NOW)).toBe(false)
+  })
+
+  test('the cooldown ends 30 minutes after the newest failure, or was never running', () => {
+    const two = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN), ended('routed-worker', 'timeout', NOW - 20 * MIN)]), NOW)
+    expect(attemptCooldownEnd(two, 'routed-worker', NOW)).toBeUndefined()
+    const three = attemptHistory(lines([ended('routed-worker', 'failed', NOW - 30 * MIN), ended('routed-worker', 'timeout', NOW - 20 * MIN),
+      ended('routed-worker', 'failed', NOW - 10 * MIN)]), NOW)
+    expect(attemptCooldownEnd(three, 'routed-worker', NOW)).toBe(NOW + 20 * MIN)
+    expect(attemptCooldownEnd(three, 'routed-worker', NOW + 20 * MIN - 1)).toBe(NOW + 20 * MIN)
+    expect(attemptCooldownEnd(three, 'routed-worker', NOW + 20 * MIN)).toBeUndefined()
+  })
+
+  test('the attempt end: an outside signal cancels, the hook limit times out, an exit fails, an answer ok', () => {
+    expect(attemptEnd(false, { exitCode: -1, signal: 'SIGTERM' }, false)).toBe('cancelled')
+    expect(attemptEnd(false, { exitCode: 0, signal: 'SIGTERM' }, false)).toBe('cancelled')
+    expect(attemptEnd(true, undefined, false)).toBe('timeout')
+    expect(attemptEnd(false, { exitCode: 1 }, false)).toBe('failed')
+    expect(attemptEnd(false, { exitCode: 0, signal: null }, false)).toBe('failed')
+    expect(attemptEnd(false, { exitCode: 0, signal: null }, true)).toBe('ok')
   })
 
   test('a logged Codex outcome contains no prompt or answer text', async () => {
