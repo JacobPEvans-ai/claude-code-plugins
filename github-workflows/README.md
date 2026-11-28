@@ -13,7 +13,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for integration diagrams and the master s
 - **`/rebase-pr`** - Merge a PR using local git rebase + signed commits + a direct push to its base branch (main on trunk repos, develop on git-flow repos)
 - **`/merge-pr`** - Validate PR readiness and merge into its base branch. Merge commit by default,
   `--squash`/`-s` to squash instead. Refuses squash/rebase into main on git-flow repos
-- **`/promote-release`** - Prepare the release on `develop`, then merge-commit its promotion to `main`, where release-please tags it
+- **`/promote-release`** - Drive the shared workflow's `promote/<version>` promotion PR into `main` on git-flow repos, where release-please tags the promoted commit
 - **`/pr-stacks`** - Split a large change into an ordered chain of dependent PRs with `gh stack`: layering, cascading rebase, and stack-aware merge
 - **`/resolve-pr-threads`** - Orchestrate resolution of PR review threads (requires the agentops plugin)
 - **`/gh-cli-patterns`** - Canonical reference for gh CLI command shapes used by other skills in this plugin, including trunk-vs-git-flow default-branch detection
@@ -44,7 +44,7 @@ claude plugins add jacobpevans-cc-plugins/github-workflows
 /rebase-pr 42             # Rebase-merge specific PR by number
 /merge-pr                 # Validate and merge (merge commit by default)
 /merge-pr 42 --squash     # Validate and squash merge specific PR
-/promote-release          # Merge-commit develop into main (git-flow repos)
+/promote-release          # Drive the promote/<version> promotion PR into main (git-flow repos)
 /pr-stacks                # Split a large change into an ordered chain of dependent PRs
 /resolve-pr-threads       # Batch resolve review threads
 /shape-issues             # Shape ideas into GitHub issues

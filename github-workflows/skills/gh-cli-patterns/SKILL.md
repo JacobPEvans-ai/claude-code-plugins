@@ -46,15 +46,16 @@ gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
 | `<DEFAULT_BRANCH>` | Model | What it means for skills in this plugin |
 |---|---|---|
 | `main` | Trunk | `main` is both the default branch and production. `/merge-pr` merges into it with its normal default (merge commit) or `--squash`/`-s`. |
-| `develop` | git-flow (see [git-flow rule](https://github.com/dryvist/ai-llm-prompts/blob/main/auto-ai-agent/instructions/agentsmd/rules/on-demand/git-flow.md)) | `develop` is the default integration branch — feature PRs target it, `/merge-pr`'s default (merge commit) or `--squash` both apply. `main` is production only: **merge commits only**, no direct pushes. Release-please opens the release PR on `develop` and tags its commit after promotion to `main`. |
+| `develop` | git-flow (see [git-flow rule](https://github.com/dryvist/ai-llm-prompts/blob/main/auto-ai-agent/instructions/agentsmd/rules/on-demand/git-flow.md)) | `develop` is the default integration branch — feature PRs target it, `/merge-pr`'s default (merge commit) or `--squash` both apply. `main` is production only: **merge commits only**, no direct pushes. Release-please opens the release PR on `develop` and tags its commit after the `promote/<version>` promotion to `main`. |
 
 **Never infer the model from the current local branch name** — always read
 `defaultBranchRef` (or `origin/HEAD`) fresh, since it can differ per repo and
 per invocation.
 
 A PR's own base branch (`gh pr view --json baseRefName --jq '.baseRefName'`)
-can still be `main` on a git-flow repo — that is a promotion PR (`develop` →
-`main`), not a feature PR, and it is merge-commit-only regardless of what
+can still be `main` on a git-flow repo — that is a promotion PR
+(`promote/<version>` → `main`, opened automatically by the shared promotion
+workflow), not a feature PR, and it is merge-commit-only regardless of what
 this section's detection returns. See `/promote-release`.
 
 ## `gh pr view --json` — REST-Only

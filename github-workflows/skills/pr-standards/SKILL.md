@@ -13,8 +13,9 @@ repo (see `gh-cli-patterns`, github-workflows, for detection).
 
 > [!IMPORTANT]
 > For Git Flow repositories, feature and bugfix PRs must always target `develop`.
-> You must also add a checklist item to the session plan to merge `develop` into
-> `main` (using `/promote-release`) before wrapping up the session.
+> You must also add a checklist item to the session plan to drive the
+> `promote/<version>` promotion into `main` (using `/promote-release`) before
+> wrapping up the session.
 
 Stacked PRs are not exempt: the guards and standards below apply to every layer.
 Because `gh stack submit` creates the PRs (rather than `gh pr create`), run the
