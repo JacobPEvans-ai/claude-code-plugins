@@ -1,6 +1,6 @@
 ---
 name: delegation-ladder
-description: Describe the maintainer's delegation hook: how it places every spawn, the task tags, route lines, refusals and verification rules for the maintainer's own setup.
+description: "Describes how the maintainer's delegation hook places every spawn: task tags, route lines, refusals and verification rules. Use when tagging, sending or checking delegated work on the maintainer's own setup."
 ---
 
 # Delegation ladder
@@ -18,11 +18,11 @@ to check a result. Shared doctrine: `prompt://dryvist/auto-ai-agent/model-delega
 The hook ranks the eligible executors at call time, as described below. The `agent-route` helper does not read quota:
 it reports a route from the hook's ladder data.
 
-| Kind | Ladder | Sandbox eligibility | Use |
-| --- | --- | --- | --- |
-| `code` | Qwen sandbox -> zcode-job sandbox -> Codex -> Z.ai GLM -> OpenCode Go | Public coding tasks | Implementation |
-| `private` | Codex | Ineligible | Private tasks |
-| `other` | Codex -> Z.ai GLM -> OpenCode Go | Ineligible | Reads, triage, summaries, review and planning |
+| Kind | Sandbox eligibility | Use |
+| --- | --- | --- |
+| `code` | Public coding tasks | Implementation |
+| `private` | Ineligible | Private tasks |
+| `other` | Ineligible | Reads, triage, summaries, review and planning |
 
 ## Dispatch and completion
 
