@@ -1,13 +1,13 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptCooldownEnd, attemptEnd, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
-import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, HarnessMcpConfig, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, Verdict } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptCooldownEnd, attemptEnd, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, newRowQueue, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, usageFromChatResponse, usageFromClaudeResult, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
+import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, HarnessMcpConfig, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, TokenUsage, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
 
 type Engine = EngineInterface
 type AgentCall = { description?: string; prompt: string; subagent_type?: string; model?: string; effort?: string; name?: string; isolation?: string; run_in_background?: boolean }
-// One child CLI attempt: its answer text on success, or one bounded line on why it failed.
-type ChildAttempt = { text?: string; reason?: string }
+// One child CLI attempt: its answer text on success, with the usage it reported, or one bounded line on why it failed.
+type ChildAttempt = { text?: string; reason?: string; usage?: TokenUsage }
 // One executor attempt: the routed result on success, or the reason its rung fell through.
 type Attempt = { result?: unknown; reason?: string }
 // A fall-through reason is one bounded line; only an uncommitted-files suffix may exceed that bound.
@@ -103,6 +103,8 @@ let executorTable: Promise<ExecutorRow[]> | undefined
 let retiredAgents: Promise<Map<string, string>> | undefined
 let backgroundJobs = 0
 let harnessViolations = new Set<string>()
+// Foreground attempts wait per executor row inside this hook process; register() resets the queues with the session.
+let foregroundRows = newRowQueue()
 
 // The built-in executor table merged with the operator override, read once per session. A bad override is logged and ignored.
 function loadExecutorTable($: Engine): Promise<ExecutorRow[]> {
@@ -404,10 +406,11 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
         // Unparseable stdout leaves the attempt failed.
       }
     } else {
-      const checked = checkHarnessResult(JSON.parse(result.stdout), row.model!)
+      const parsed = JSON.parse(result.stdout) as unknown
+      const checked = checkHarnessResult(parsed, row.model!)
       if (checked.ok) {
         end = attemptEnd(false, result, true)
-        return { text: checked.text }
+        return { text: checked.text, usage: usageFromClaudeResult(parsed) }
       }
       failure = checked.reason
       if (checked.violation) {
@@ -450,6 +453,19 @@ async function logDecision($: Engine, line: string): Promise<boolean> {
   return false
 }
 
+// One log line when a foreground call starts to wait for a busy executor row, with the calls ahead of it.
+async function logQueued($: Engine, executor: Executor, ahead: number): Promise<void> {
+  const ts_ms = await clockNow($)
+  await logDecision($, JSON.stringify({ ts_ms, event: 'queued', executor, ahead }))
+}
+
+// One attempt on one executor row. Foreground attempts queue per row, first in first out; the detached background
+// path never enters a queue and never makes one wait. The wait callback does not block the queue on the log write.
+function queuedAttempt<T>($: Engine, row: Executor, foreground: boolean, work: () => Promise<T>): Promise<T> {
+  if (!foreground) return work()
+  return foregroundRows.run(row, work, (ahead) => { void logQueued($, row, ahead) })
+}
+
 // Context windows of the on-host aliases, read once per session from the local router.
 function localModelWindows($: Engine, base: string): Promise<Record<string, number | undefined>> {
   localWindows ??= (async () => {
@@ -469,17 +485,18 @@ function localModelWindows($: Engine, base: string): Promise<Record<string, numb
 }
 
 // One chat completion on an on-host alias. An empty answer or a length cut-off is a failed check.
-async function runLocal($: Engine, e: AgentCall, base: string, alias: string, timeoutMs: number): Promise<string | undefined> {
+async function runLocal($: Engine, e: AgentCall, base: string, alias: string, timeoutMs: number): Promise<{ text: string; usage: TokenUsage } | undefined> {
   try {
     const response = await withTimeout($, $.http.fetch(`${base}/v1/chat/completions`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: alias, max_tokens: LOCAL_OUTPUT_TOKENS, messages: [{ role: 'user', content: e.prompt }] }),
     }), timeoutMs)
     if (!response.ok) throw new Error('HTTP failure')
-    const choice = JSON.parse(response.text)?.choices?.[0]
+    const parsed = JSON.parse(response.text) as unknown
+    const choice = (parsed as { choices?: { message?: { content?: unknown }; finish_reason?: unknown }[] })?.choices?.[0]
     const out = choice?.message?.content
     if (typeof out !== 'string' || !out.trim() || choice?.finish_reason === 'length') throw new Error('failed check')
-    return out.trim()
+    return { text: out.trim(), usage: usageFromChatResponse(parsed) }
   } catch {
     await logDecision($, `local ${alias} gave no checked answer`)
     return undefined
@@ -565,7 +582,7 @@ async function runRoutedHarness($: Engine, e: AgentCall, row: ExecutorRow, sandb
   const child = await runHarness($, row, sandbox, e.prompt, ROUTED_CHILD_TIMEOUT_MS, cwd, mcp)
   if (!child.text) return { reason: child.reason ?? 'unknown failure' }
   await logDecision($, `route: ${row.id} -> harness ${row.model} (${sandbox})`)
-  return { result: routedResult(e, 'ai-delegation-harness', child.text, `[routed: harness ${row.model}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started) }
+  return { result: routedResult(e, 'ai-delegation-harness', child.text, `[routed: harness ${row.model}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started, child.usage) }
 }
 
 // The harness rung uses the same sandbox decision as Codex and adds the mandatory bulk-complex tag before dispatch.
@@ -593,7 +610,11 @@ async function runCodexRung($: Engine, e: AgentCall, customSandbox: Sandbox | un
   return runRoutedCodex($, e, label, CODEX[label], sandbox, `class ${label}`)
 }
 
-function routedResult(e: AgentCall, agentId: string, out: string, footer: string, duration: number): unknown {
+// The routed result the session sees. `counted` carries the usage the executor's own final output reported; without
+// one, or with an unreadable block, the counters stay at zero. Total tokens are the reported input plus output.
+function routedResult(e: AgentCall, agentId: string, out: string, footer: string, duration: number, counted?: TokenUsage): unknown {
+  const input = counted?.input_tokens ?? 0
+  const output = counted?.output_tokens ?? 0
   return {
     result: {
       status: 'completed',
@@ -602,8 +623,8 @@ function routedResult(e: AgentCall, agentId: string, out: string, footer: string
       content: [{ type: 'text', text: `${out}\n\n${footer}` }],
       totalToolUseCount: 0,
       totalDurationMs: duration,
-      totalTokens: 0,
-      usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: null, cache_read_input_tokens: null, server_tool_use: null, service_tier: null, cache_creation: null },
+      totalTokens: input + output,
+      usage: { input_tokens: input, output_tokens: output, cache_creation_input_tokens: null, cache_read_input_tokens: null, server_tool_use: null, service_tier: null, cache_creation: null },
     },
   } as never
 }
@@ -1123,7 +1144,9 @@ function startBackground($: Engine, call: AgentCall): unknown {
   return routedResult(call, `ai-delegation-${job}`, `Started background job ${job}. Its result arrives later as a message from jpe-ai-delegation.`, `[routed: background ${job}]`, 0)
 }
 
-async function route($: Engine, e: AgentCall): Promise<unknown> {
+// One routed spawn. `foreground` is true for a call the session is waiting on: its attempts queue per executor row,
+// first in first out. The detached background path re-enters without the flag and runs unqueued, as before.
+async function route($: Engine, e: AgentCall, foreground = false): Promise<unknown> {
   const event = newEvent(e)
   // Every exit writes exactly one route line; the route never calls core, so a refusal is a result, not a throw.
   const original = e
@@ -1137,7 +1160,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
   } : undefined
   // Network or GitHub-write work can only use the host harness; sandbox executors lack egress and credentials.
   if (networkTask(original.description, original.prompt) || definition?.egress === 'network') {
-    return routeNetwork($, e, event, customSandbox, mcp)
+    return routeNetwork($, e, event, foreground, customSandbox, mcp)
   }
   if (original.run_in_background === true) {
     await logRoute($, event, 'background', 'run_in_background')
@@ -1166,7 +1189,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
       const out = await runLocal($, e, base, local.alias, local.timeoutMs)
       if (out) {
         await logRoute($, event, `local ${local.alias}`, 'checked local answer')
-        return routedResult(e, 'ai-delegation-local', out, `[routed: local ${local.alias}]`, 0)
+        return routedResult(e, 'ai-delegation-local', out.text, `[routed: local ${local.alias}]`, 0, out.usage)
       }
       event.reasons[`local ${local.alias}`] = 'no checked answer'
       event.fell_through_from.push(`local ${local.alias}`)
@@ -1243,8 +1266,11 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
     if (row.transport === 'harness') {
       if (!base) { skipped[executor] = 'not_installed'; continue }
       if (harnessDown) { skipped[executor] = 'failed'; continue }
-      const startedAt = await clockNow($)
-      const attempt = await runHarnessRung($, e, row, customSandbox, rungLabel, mcp)
+      const { attempt, startedAt } = await queuedAttempt($, row.id, foreground, async () => {
+        // The attempt's own clock starts when it holds the row; a queued wait never counts toward this row's pace.
+        const startedAt = await clockNow($)
+        return { attempt: await runHarnessRung($, e, row, customSandbox, rungLabel, mcp), startedAt }
+      })
       result = attempt.result
       reason = attempt.reason
       if (!result) {
@@ -1253,7 +1279,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
         if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
       }
     } else if (row.transport === 'codex') {
-      const attempt = await runCodexRung($, e, customSandbox, rungLabel)
+      const attempt = await queuedAttempt($, row.id, foreground, () => runCodexRung($, e, customSandbox, rungLabel))
       result = attempt.result
       reason = attempt.reason
       if (!result) skipped[executor] = 'failed'
@@ -1265,13 +1291,13 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
       // The local rung's chat call and size gate, under the row's router model; never code or tool work. A prompt whose
       // estimate exceeds 60% of the model's window, or a model with no known window, is skipped.
       const fits = textOnly && base ? ((await localModelWindows($, base))[row.model!] ?? 0) * 0.6 >= estimateTokens(e.prompt) : false
-      const out = fits ? await runLocal($, e, base!, row.model!, TEXT_EXECUTOR_TIMEOUT_MS) : undefined
-      if (out && hasChatTemplateLeak(out)) {
+      const out = fits ? await queuedAttempt($, row.id, foreground, () => runLocal($, e, base!, row.model!, TEXT_EXECUTOR_TIMEOUT_MS)) : undefined
+      if (out && hasChatTemplateLeak(out.text)) {
         $.ui.log('ai-delegation: router-chat failed: answer contains chat-template syntax')
         await logDecision($, 'router-chat failure: answer contains chat-template syntax')
         skipped[executor] = 'failed'
         reason = 'answer contains chat-template syntax'
-      } else if (out) result = routedResult(e, 'ai-delegation-router-chat', out, `[routed: router-chat ${row.model}]`, 0)
+      } else if (out) result = routedResult(e, 'ai-delegation-router-chat', out.text, `[routed: router-chat ${row.model}]`, 0, out.usage)
       else if (!textOnly || (base && !fits)) { skipped[executor] = 'ineligible'; reason = 'not eligible' }
       else if (base) { skipped[executor] = 'failed'; reason = 'no checked answer' }
       else { skipped[executor] = 'not_installed'; reason = 'not installed' }
@@ -1281,7 +1307,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
     } else if (recentFailures(outcomes ??= await jobOutcomes($, now), executor, repo, now)) {
       skipped[executor] = 'recent_failures'
     } else {
-      const run = await runSandboxExecutor($, e, repo, row.tool!, executor)
+      const run = await queuedAttempt($, row.id, foreground, () => runSandboxExecutor($, e, repo, row.tool!, executor))
       if (run.record) event.jobs.push(run.record)
       if (run.record && run.state) await logOutcomes($, [{ record: run.record, state: run.state }])
       if (!run.result) skipped[executor] = run.state || run.refused ? 'failed' : 'not_installed'
@@ -1311,7 +1337,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
 }
 
 // Network or GitHub-write work runs only on harness rows, which use the host router and never a sandbox executor.
-async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent, customSandbox?: Sandbox, mcp?: HarnessMcpConfig): Promise<unknown> {
+async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent, foreground: boolean, customSandbox?: Sandbox, mcp?: HarnessMcpConfig): Promise<unknown> {
   const base = (await $.env.get('LITELLM_LOCAL_BASE_URL'))?.replace(/\/+$/, '')
   const table = await loadExecutorTable($)
   const now = (await clockNow($)) ?? Number.POSITIVE_INFINITY
@@ -1334,8 +1360,11 @@ async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent, customSa
       skipped[row.id] = 'recent_failures'
       continue
     }
-    const startedAt = await clockNow($)
-    const attempt = await runHarnessRung($, e, row, customSandbox, rungLabel, mcp)
+    const { attempt, startedAt } = await queuedAttempt($, row.id, foreground, async () => {
+      // The attempt's own clock starts when it holds the row; a queued wait never counts toward this row's pace.
+      const startedAt = await clockNow($)
+      return { attempt: await runHarnessRung($, e, row, customSandbox, rungLabel, mcp), startedAt }
+    })
     if (attempt.result) {
       await logRoute($, event, row.id, 'network work')
       return withFallThrough(attempt.result, event)
@@ -1402,6 +1431,7 @@ export const register: Register = (on) => {
   executorTable = undefined
   retiredAgents = undefined
   harnessViolations = new Set<string>()
+  foregroundRows = newRowQueue()
   routeTelemetryFailureLogged = false
 
   // Start the first quota read without delaying the session.
@@ -1418,7 +1448,7 @@ ${PROMPT_POLICY}`, scope: 'session' }] }
   }).catch(($, e, next) => next(e))
 
   // An unexpected router failure must not bypass the model and payload guards, and never falls back to the session.
-  on('tool.call', { tool: 'Agent' }, ($, e) => route($, e as never) as never).catch(async ($, e) => {
+  on('tool.call', { tool: 'Agent' }, ($, e) => route($, e as never, true) as never).catch(async ($, e) => {
     const original = e as AgentCall
     // A guard that cannot be evaluated stops the spawn: a refusal is the only exit after the guards pass.
     try {
