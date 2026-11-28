@@ -82,8 +82,10 @@ git log --oneline origin/main..origin/develop   # newest entry is the release co
 
 If `develop` has no commits ahead of `main`, **stop** and report: "`develop`
 has no commits ahead of `main` — nothing to promote." If the newest
-release-please PR is still open on `develop`, wait for its auto-merge or
-merge it first with `/merge-pr <RELEASE_PR_NUMBER> --squash`.
+release-please PR is still open on `develop`, the PR Reconcile sweep merges
+it once it is green and four hours old, so releases batch. For an urgent
+release, or when the sweep is down, merge it now with
+`/merge-pr <RELEASE_PR_NUMBER> --squash`, pinned to its head.
 
 ## Step 2: Find the Open Promotion PR
 
