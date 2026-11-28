@@ -1,7 +1,8 @@
 ---
 name: promote-release
 description: >-
-  Drives the automatic promote/<version> promotion PR into main on git-flow
+  Drives the automatic promote/&lt;version&gt; promotion PR into main on
+  git-flow
   repos: confirm the release-please PR merged on develop, merge the promotion
   with a merge commit, and verify the release-please tag. Refuses on trunk
   repos — use /merge-pr.
