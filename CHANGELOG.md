@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.86.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.86.0...v6.86.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** rank hard work past harness rows and name the retry time ([#948](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/948)) ([2e09439](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/2e09439197a871e4dedb86090abd0a903e490947))
+
 ## [6.86.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.85.2...v6.86.0) (2026-11-28)
 
 
