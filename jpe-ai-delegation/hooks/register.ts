@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptCooldownEnd, attemptEnd, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, newRowQueue, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, usageFromChatResponse, usageFromClaudeResult, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptCooldownEnd, attemptEnd, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, newRowQueue, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseSensitivityVerdict, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, secretMaterial, taggedText, usageFromChatResponse, usageFromClaudeResult, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand, SENSITIVITY, SENSITIVITY_ALIAS, SENSITIVITY_OUTPUT_TOKENS, SENSITIVITY_TIMEOUT_MS } from './lib/policy'
 import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, HarnessMcpConfig, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, TokenUsage, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
@@ -777,21 +777,53 @@ async function github($: Engine, path: string): Promise<unknown> {
   }
 }
 
-// The tagged repository, or without a tag the one inferred from the prompt paths, when the task is non-sensitive
-// coding in a verified public repository; otherwise undefined. `codeTask` is an explicit `[task: code]` tag or a
-// `code` classification. Either way GitHub visibility decides.
-async function publicCodeRepo($: Engine, e: AgentCall, codeTask: boolean): Promise<string | undefined> {
-  if (!codeTask || credentialBrief(`${e.description ?? ''}\n${e.prompt}`)) return undefined
+type SensitivityDecision = { verdict: 'public' | 'private'; source: 'model' | 'fallback' | 'material' }
+
+// One bounded decision on the on-host sensitivity alias. Only a complete parsed verdict is trusted; every failure
+// keeps the brief private, without exposing the brief or model reason in logs.
+async function decideSensitivity($: Engine, text: string): Promise<SensitivityDecision> {
+  try {
+    const base = (await $.env.get('LITELLM_LOCAL_BASE_URL'))?.replace(/\/+$/, '')
+    if (!base) throw new Error('router URL unset')
+    const response = await withTimeout($, $.http.fetch(`${base}/v1/chat/completions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: SENSITIVITY_ALIAS, max_tokens: SENSITIVITY_OUTPUT_TOKENS, ...NO_THINKING, messages: [{ role: 'user', content: `${SENSITIVITY}\n\nTask:\n${text}` }] }),
+    }), SENSITIVITY_TIMEOUT_MS)
+    if (!response.ok) throw new Error('HTTP failure')
+    const choice = JSON.parse(response.text)?.choices?.[0]
+    if (choice?.finish_reason === 'length') throw new Error('truncated reply')
+    const verdict = parseSensitivityVerdict(choice?.message?.content)
+    if (!verdict) throw new Error('no verdict in reply')
+    await logDecision($, `sensitivity: ${verdict} (model)`)
+    return { verdict, source: 'model' }
+  } catch {
+    await logDecision($, 'sensitivity: private (fallback)')
+    return { verdict: 'private', source: 'fallback' }
+  }
+}
+
+// The tagged repository, or without a tag the one inferred from the prompt paths, when the task is code in a
+// verified public repository and the self-hosted sensitivity decision permits it; otherwise no public repository.
+async function publicCodeRepo($: Engine, e: AgentCall, codeTask: boolean): Promise<{ repo?: string; sensitivity?: SensitivityDecision }> {
+  if (!codeTask) return {}
   try {
     const tagged = repositoryTag(e.description, e.prompt)
     const root = tagged ? undefined : await repositoryRoot($, e)
     const repo = tagged ?? (root ? await inferredRepository($, root) : undefined)
-    if (!repo) return undefined
+    if (!repo) return {}
     const repository = await github($, repo) as { visibility?: string; private?: boolean }
-    return repository.visibility === 'public' && repository.private === false ? repo : undefined
+    if (repository.visibility !== 'public' || repository.private !== false) return {}
+    const text = `${e.description ?? ''}\n${e.prompt}`
+    if (secretMaterial(text)) {
+      const sensitivity = { verdict: 'private', source: 'material' } as const
+      await logDecision($, 'sensitivity: private (secret material)')
+      return { sensitivity }
+    }
+    const sensitivity = await decideSensitivity($, text)
+    return sensitivity.verdict === 'public' ? { repo, sensitivity } : { sensitivity }
   } catch {
     await logDecision($, 'public repository could not be verified')
-    return undefined
+    return {}
   }
 }
 
@@ -940,6 +972,7 @@ type RouteEvent = {
   reasons: Record<string, string>
   skipped: Record<string, SkipReason>; jobs: JobRecord[]
   quota_unknown: Record<string, QuotaReason>; quota_source: Record<string, string>
+  sensitivity?: SensitivityDecision
   retry_after_ms?: number
 }
 
@@ -1198,7 +1231,9 @@ async function route($: Engine, e: AgentCall, foreground = false): Promise<unkno
 
   // Subscription rungs: eligibility, then usage pace. No Claude rung follows them: an unanswered spawn is refused.
   const restricted = definition && (definition.tools !== undefined || Boolean(definition.disallowedTools?.length))
-  const repo = restricted ? undefined : await publicCodeRepo($, e, event.kind.value === 'code')
+  const publicCode: { repo?: string; sensitivity?: SensitivityDecision } = restricted ? {} : await publicCodeRepo($, e, event.kind.value === 'code')
+  const repo = publicCode.repo
+  if (publicCode.sensitivity) event.sensitivity = publicCode.sensitivity
   const table = await loadExecutorTable($)
   // Without a clock reading no promotion is proven unexpired (Infinity expires them all) and no peak applies.
   const now = (await clockNow($)) ?? Number.POSITIVE_INFINITY

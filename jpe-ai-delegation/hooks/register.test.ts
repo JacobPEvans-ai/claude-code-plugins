@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
 import { attemptCooldownEnd, attemptEnd, attemptHistory, checkHarnessResult, endAnchor, forbiddenHarnessModel, hasChatTemplateLeak, harnessArgv, harnessEnv, jobHistory, jobState, recentAttemptFailures, recentFailures } from './lib/policy'
 import { register } from './register'
-import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, newRowQueue, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, credentialBrief, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand, usageFromChatResponse, usageFromClaudeResult } from './lib/policy'
+import { CODEX, CLASSIFIER, CLAUDE_MODEL_NAMES, CODEX_QUOTA_THRESHOLD, EXECUTOR_TABLE, ROUTED_CHILD_TIMEOUT_MS, codexArgv, eligibleRows, mergeExecutorRows, metricsResult, newRowQueue, parseCodexQuota, peakMultiplier, QUOTA_SELECTOR, quotaFromMetrics, rankRows, repositoryFromOrigin, reviewOnly, validRow, estimateTokens, explicitLabel, forbiddenModel, isAdvisory, codingTask, localTask, networkTask, mandatoryLabel, newestModel, parseVerdict, parseSensitivityVerdict, parseRetiredAgents, retiredAgent, pickLocal, safePayload, scoreWindows, budgetsFromMetrics, forbiddenRowModel, KIND_CLASSIFIER, parseKind, SUBAGENT_DENIED_COMMANDS, subagentRunsDeniedCommand, usageFromChatResponse, usageFromClaudeResult, secretMaterial, SENSITIVITY, SENSITIVITY_ALIAS, SENSITIVITY_OUTPUT_TOKENS, SENSITIVITY_TIMEOUT_MS } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import { RECORDED_QUOTA } from './fixtures/quota-instant-query'
 import type { HarnessMcpConfig } from './lib/policy'
@@ -32,7 +32,7 @@ type World = {
   originUrl?: string; pathRealpaths?: Record<string, string>; pathGitRoots?: Record<string, string>; unresolvedPaths?: string[]; pathKinds?: Record<string, 'file' | 'directory'>
   zcodeExit?: number; zcodeOutput?: string; zcodeAvailable?: boolean; zcodeThrows?: boolean; zcodeTruncated?: boolean
   sandboxRuns?: Record<string, { exit: number; output: string }>; jobStatus?: Record<string, unknown>; statusHangs?: boolean; statusExit?: number; logTail?: unknown[]; tailTruncated?: boolean
-  gatewayTimeout?: boolean; gatewayStatus?: Record<string, number>; gatewayAnswer?: Record<string, string>; gatewayUsage?: Record<string, number>; gatewayInvalidJson?: boolean; classifierTimeout?: boolean
+  gatewayTimeout?: boolean; gatewayStatus?: Record<string, number>; gatewayAnswer?: Record<string, string>; gatewayUsage?: Record<string, number>; gatewayInvalidJson?: boolean; gatewayThrows?: boolean; classifierTimeout?: boolean
   quotaUrl?: string | null; quotaTimeout?: boolean; quotaText?: string; quotaSampleAge?: number; quotaStatus?: number
   quotaFileTypes?: Record<string, 'file' | 'directory' | 'symlink'>
   readThrows?: string; readHangs?: string
@@ -41,6 +41,8 @@ type World = {
   collectorStatus?: number; collectorThrows?: boolean; collectorTimeout?: boolean
   localDefaultWindow?: number
 }
+
+const DEFAULT_PUBLIC_SENSITIVITY = JSON.stringify({ verdict: 'public', reason: 'Ordinary coding in a verified public repository.' })
 
 // Exercise the registered hooks with all IO captured; no subprocess or HTTP request escapes the fixture.
 function world(w: World = {}) {
@@ -231,9 +233,12 @@ function world(w: World = {}) {
       ] }) }
       const body = JSON.parse(init.body ?? '{}')
       if (url.endsWith('/systemone')) return { ok: true, text: JSON.stringify({ answers: { route: { choice: w.label ?? 'standard', answer_confidence: 1 } } }) }
+      if (w.gatewayThrows) throw new Error('gateway request failed')
       if (w.gatewayTimeout || (w.classifierTimeout && body.model === 'small')) return new Promise<never>(() => {})
       const status = w.gatewayStatus?.[body.model] ?? 200
-      return { ok: status === 200, text: w.gatewayInvalidJson ? '{' : JSON.stringify({ choices: [{ finish_reason: w.gatewayFinish ?? 'stop', message: { content: w.gatewayAnswer?.[body.model] ?? 'gateway result' } }], ...(w.gatewayUsage ? { usage: w.gatewayUsage } : {}) }) }
+      // Sensitivity succeeds publicly by default; tests for model failures set the failure explicitly.
+      const defaultAnswer = body.model === SENSITIVITY_ALIAS ? DEFAULT_PUBLIC_SENSITIVITY : 'gateway result'
+      return { ok: status === 200, text: w.gatewayInvalidJson ? '{' : JSON.stringify({ choices: [{ finish_reason: w.gatewayFinish ?? 'stop', message: { content: w.gatewayAnswer?.[body.model] ?? defaultAnswer } }], ...(w.gatewayUsage ? { usage: w.gatewayUsage } : {}) }) }
     } },
     model: { complete: async (input: unknown) => { modelCalls.push(input); return { isAnswered: true, text: w.answer ?? '' } } },
     agent: { spawn: async (args: unknown) => { agentSpawns.push(args); return { agentId: 'agent-1' } } },
@@ -330,6 +335,7 @@ const nonGithub = (w: ReturnType<typeof world>) => w.fetches.filter((f) => !f.ur
 const classifierCalls = (w: ReturnType<typeof world>) => w.fetches.filter((f) => f.body !== undefined && JSON.parse(f.body).messages?.[0]?.content?.startsWith(KIND_CLASSIFIER) === true)
 // Chat-completion requests that carry the label-classifier instruction, i.e. the Codex rung's classification traffic.
 const labelClassifyCalls = (w: ReturnType<typeof world>) => w.fetches.filter((f) => f.body !== undefined && JSON.parse(f.body).messages?.[0]?.content?.startsWith(CLASSIFIER) === true)
+const sensitivityCalls = (w: ReturnType<typeof world>) => w.fetches.filter((f) => f.body !== undefined && JSON.parse(f.body).messages?.[0]?.content?.startsWith(SENSITIVITY) === true)
 // The fixed native quota command, one entry per call.
 const codexQuotaCalls = (w: ReturnType<typeof world>) => w.calls.filter((c) => c.argv[0] === 'codex-quota')
 
@@ -383,6 +389,46 @@ describe('policy', () => {
     expect(isAdvisory('complex')).toBe(false)
     expect(parseVerdict('{"verdict":"safe","reason":"bounded"}')).toEqual({ verdict: 'safe', reason: 'bounded' })
     expect(parseVerdict('{"verdict":"maybe","reason":"x"}')).toBeUndefined()
+  })
+  test('secretMaterial recognizes secret-looking values, not labels or placeholders', () => {
+    const values = [
+      '-----BEGIN CERTIFICATE-----',
+      `ghp_${'g'.repeat(36)}`,
+      `github_pat_${'g'.repeat(82)}`,
+      `xoxb-${'x'.repeat(20)}`,
+      `xoxp-${'x'.repeat(20)}`,
+      `xoxa-${'x'.repeat(20)}`,
+      // Built at runtime so the secret scanner does not read a credential-shaped literal.
+      `AKIA${'1234567890ABCDEF'}`,
+      `sk-${'s'.repeat(20)}`,
+      `hvs.${'h'.repeat(20)}`,
+      `api_key=${'a'.repeat(32)}`,
+      `session_token: '${'b'.repeat(40)}'`,
+      `db_secret = ${'c'.repeat(32)}`,
+      `user_password: ${'d'.repeat(36)}`,
+    ]
+    for (const value of values) expect(secretMaterial(value)).toBe(true)
+    for (const value of [
+      'A check named Token Limits.',
+      'You hold no credentials.',
+      'api_key: ${API_KEY}',
+      'password: <password>',
+      `key=${'a'.repeat(31)}`,
+    ]) expect(secretMaterial(value)).toBe(false)
+  })
+  test('sensitivity verdict parsing accepts only one complete object with the promised fields', () => {
+    expect(SENSITIVITY_TIMEOUT_MS).toBe(20_000)
+    expect(parseSensitivityVerdict('{"verdict":"public","reason":"Ordinary public code."}')).toBe('public')
+    expect(parseSensitivityVerdict('{"verdict":"private","reason":"It names internal hosts."}')).toBe('private')
+    for (const value of [
+      undefined,
+      'public',
+      '{"verdict":"maybe","reason":"Unsure."}',
+      '{"verdict":"public","reason":"Okay."} trailing',
+      '{"verdict":"public","reason":"Okay.","extra":true}',
+      '{"verdict":"public"}',
+      '{"verdict":"public","reason":""}',
+    ]) expect(parseSensitivityVerdict(value)).toBeUndefined()
   })
   test('reviewOnly matches a review, audit or verdict ask that requests no change', () => {
     expect(reviewOnly('Review the supplied changes.')).toBe(true)
@@ -552,7 +598,7 @@ describe('custom agent tool authority', () => {
   for (const model of ['"ha\\x69ku"', '"ha\\u0069ku"', '"ha\\U00000069ku"']) {
     test(`YAML model escapes preserve inherited routing: ${model}`, async () => {
       for (const quota of [0, 1]) {
-        const w = world({ quota, definition: `---\nmodel: ${model}\n---\nImplement the requested change.` })
+        const w = world({ quota, env: gateways, definition: `---\nmodel: ${model}\n---\nImplement the requested change.` })
         const result = text(await w.agent({ ...coding, subagent_type: 'worker' }))
         const event = routeEvents(w).at(-1)
         expect(event.eligible).toContain('zcode')
@@ -746,7 +792,7 @@ describe('custom agent tool authority', () => {
   }
   test('omitting tools keeps unrestricted sandbox eligibility at every quota', async () => {
     for (const quota of [0, 1]) {
-      const w = world({ quota, definition: '---\nmodel: haiku\n---\nImplement the requested change.' })
+      const w = world({ quota, env: gateways, definition: '---\nmodel: haiku\n---\nImplement the requested change.' })
       const result = text(await w.agent({ ...coding, subagent_type: 'worker' }))
       const event = routeEvents(w).at(-1)
       expect(event.eligible).toContain('zcode')
@@ -880,12 +926,14 @@ describe('Codex rung', () => {
     })
   }
   test('known at-pace Codex ranks ahead of unknown sandboxes for tagged public coding', async () => {
-    const w = world()
+    const w = world({ env: gateways })
     expect(text(await w.agent(coding))).toContain('codex luna xhigh')
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'codex', eligible: ['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'], scores: { codex: { used: 50, line: 50 } } })
     expect(runs(w)).toHaveLength(1)
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-    expect(w.fetches.map((f) => f.url)).toEqual(['https://api.github.com/repos/owner/project'])
+    expect(w.fetches.map((f) => f.url)).toEqual(['https://api.github.com/repos/owner/project', 'http://localhost:8000/v1/chat/completions', 'http://localhost:8000/v1/chat/completions'])
+    expect(sensitivityCalls(w)).toHaveLength(1)
+    expect(labelClassifyCalls(w)).toHaveLength(1)
   })
   test('untagged public work still classifies onto Codex Luna', async () => {
     const w = world({ env: gateways })
@@ -1098,8 +1146,8 @@ describe('model and payload guards', () => {
       'token=writer',
     ]) expect(safePayload(payload)).toBe(false)
   })
-  test('permission levels and environment references pass the payload scan; their token words keep the brief off the sandbox rows', async () => {
-    const w = world({ quota: 1, env: gateways })
+  test('permission levels and environment references pass the payload scan; a private model verdict keeps the brief off the sandbox rows', async () => {
+    const w = world({ quota: 1, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: JSON.stringify({ verdict: 'private', reason: 'The task concerns credential handling.' }) } })
     const prompt = 'Grant `id-token: write` and read api_key: $TOKEN_ENV; the writer role is service-writer-role.'
     expect(safePayload(prompt)).toBe(true)
     await w.agent({ ...coding, prompt })
@@ -1188,7 +1236,7 @@ describe('capped ladder', () => {
     test(`tool-dependent tasks skip chat gateways and are refused when nothing answers: ${task.prompt}`, async () => {
       const w = world({ quota: 1, zcodeAvailable: false, env: gateways })
       expect(text(await w.agent(task))).toBe(refusedWith(note))
-      expect(nonGithub(w).filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
+      expect(nonGithub(w).filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toEqual([])
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -1199,7 +1247,7 @@ describe('capped ladder', () => {
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', kind: { value: 'code', source: 'tag' } })
     expect(w.calls.find((c) => c.argv[1] === 'start')?.env).toEqual({ UNTRUSTED_OK: 'public' })
     expect(w.calls.filter((c) => c.argv[1] !== 'start').every((c) => c.env === undefined)).toBe(true)
-    expect(w.fetches.map((f) => f.url)).toEqual(['https://api.github.com/repos/owner/project', 'https://api.github.com/repos/owner/project/pulls/12'])
+    expect(w.fetches.map((f) => f.url)).toEqual(['https://api.github.com/repos/owner/project', 'http://localhost:8000/v1/chat/completions', 'https://api.github.com/repos/owner/project/pulls/12'])
     expect(w.nextCalls).toEqual([])
   })
   test('AGENT_ROUTE_ZCODE_TOOLS without opencode-qwen skips the qwen row and dispatches zcode plainly', async () => {
@@ -1265,7 +1313,7 @@ describe('capped ladder', () => {
       const w = world({ quota: 1, env: gateways, ...options })
       expect(text(await w.agent(call))).toBe(refusedWith(HARNESS_LADDER))
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toBe(false)
+      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toBe(false)
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -1281,7 +1329,7 @@ describe('capped ladder', () => {
       const w = world({ quota: 1, env: gateways, ...options })
       expect(text(await w.agent(call))).toBe(refusedWith(note))
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toBe(false)
+      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toBe(false)
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -1301,7 +1349,7 @@ describe('capped ladder', () => {
         : 'zcodeTruncated' in options ? { chosen: 'stopped', reason: 'qwen dispatch failed before the job was accepted' }
           : { chosen: 'qwen', reason: 'sandbox job without a verified PR' }
       expect(routeEvents(w).at(-1)).toMatchObject(expected)
-      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toBe(false)
+      expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toBe(false)
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -2046,7 +2094,7 @@ describe('usage pace ranking', () => {
   })
   test('no readings keep today’s table order and record unknown values', async () => {
     expect(rankRows(EXECUTOR_TABLE, {}, now).order).toEqual(EXECUTOR_TABLE.map((row) => row.id))
-    const w = world({ quotaUrl: null })
+    const w = world({ quotaUrl: null, env: gateways })
     await w.agent(coding)
     const event = routeEvents(w).at(-1)
     expect(event.eligible).toEqual(['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'])
@@ -2105,22 +2153,105 @@ describe('routing batch', () => {
     expect(text(await w.agent(coding))).toContain('[routed: Qwen sandbox;')
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', kind: { value: 'code', source: 'tag' }, eligible: ['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'] })
   })
-  test('a router brief in a verified public repository keeps the sandbox rows eligible', async () => {
-    const w = world({ quota: 1, env: gateways })
+  test('a router brief in a verified public repository keeps the sandbox rows eligible after a public model verdict', async () => {
+    const w = world({ quota: 1, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: JSON.stringify({ verdict: 'public', reason: 'The routing changes concern ordinary public code.' }) } })
     await w.agent({ ...coding, prompt: 'Implement the router routing change for the memory cluster.' })
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', eligible: ['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'] })
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', sensitivity: { verdict: 'public', source: 'model' }, eligible: ['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'] })
   })
-  for (const word of ['credential', 'auth', 'secret', 'token', 'password', 'key']) {
-    test(`a ${word} brief in a verified public repository never reaches a sandbox row`, async () => {
-      const w = world({ quota: 1, env: gateways })
-      await w.agent({ ...coding, prompt: `Implement the ${word} change.` })
-      expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-      expect(routeEvents(w).at(-1).skipped).toMatchObject({ qwen: 'ineligible', zcode: 'ineligible', 'opencode-go': 'ineligible', cursor: 'ineligible' })
+  test('the self-hosted sensitivity model allows harmless credential words in public code', async () => {
+    const reason = 'The terms are only constraints and a check name.'
+    const w = world({ quota: 1, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: JSON.stringify({ verdict: 'public', reason }) } })
+    const result = await w.agent({ ...coding, prompt: 'Add a check named "Token Limits" and note that you hold no credentials.' })
+    expect(text(result)).toContain('[routed: Qwen sandbox;')
+    expect(sensitivityCalls(w)).toHaveLength(1)
+    expect(JSON.parse(sensitivityCalls(w)[0].body!).model).toBe(SENSITIVITY_ALIAS)
+    expect(JSON.parse(sensitivityCalls(w)[0].body!)).toMatchObject({ max_tokens: SENSITIVITY_OUTPUT_TOKENS, chat_template_kwargs: { enable_thinking: false } })
+    expect(sensitivityCalls(w)[0].url).toBe('http://localhost:8000/v1/chat/completions')
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', sensitivity: { verdict: 'public', source: 'model' }, eligible: ['qwen', 'zcode', 'opencode-go', 'codex', 'cursor'] })
+    expect(w.writes.join('')).not.toContain(reason)
+  })
+  test('a private sensitivity verdict removes sandbox eligibility and does not log its reason', async () => {
+    const reason = 'The task contains internal host and address details.'
+    const w = world({ quota: 1, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: JSON.stringify({ verdict: 'private', reason }) } })
+    await w.agent({ ...coding, prompt: 'Inventory the internal host names and IP addresses.' })
+    expect(sensitivityCalls(w)).toHaveLength(1)
+    expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
+    expect(routeEvents(w).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'model' }, skipped: { qwen: 'ineligible', zcode: 'ineligible', 'opencode-go': 'ineligible', cursor: 'ineligible' } })
+    expect(w.writes.join('')).not.toContain(reason)
+  })
+  for (const [name, options] of [
+    ['has no router URL', { env: { ...gateways, LITELLM_LOCAL_BASE_URL: '' } }],
+    ['throws', { gatewayThrows: true }],
+    ['times out', { gatewayTimeout: true }],
+    ['returns HTTP 503', { gatewayStatus: { [SENSITIVITY_ALIAS]: 503 } }],
+    ['returns garbage', { gatewayAnswer: { [SENSITIVITY_ALIAS]: 'not a JSON verdict' } }],
+    ['returns fenced JSON', { gatewayAnswer: { [SENSITIVITY_ALIAS]: '```json\n{"verdict":"private","reason":"It names an internal IP."}\n```' } }],
+    ['is truncated', { gatewayFinish: 'length', gatewayAnswer: { [SENSITIVITY_ALIAS]: JSON.stringify({ verdict: 'public', reason: 'Routine public code.' }) } }],
+    ['returns an unknown verdict', { gatewayAnswer: { [SENSITIVITY_ALIAS]: '{"verdict":"unknown","reason":"Unclear."}' } }],
+  ] as const) {
+    test(`sensitivity decision ${name} fails closed`, async () => {
+      const keywordBrief = world({ quota: 1, env: gateways, ...options })
+      await keywordBrief.agent({ ...coding, prompt: 'Add a check named "Token Limits".' })
+      expect(routeEvents(keywordBrief).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'fallback' }, skipped: { qwen: 'ineligible', zcode: 'ineligible', 'opencode-go': 'ineligible', cursor: 'ineligible' } })
+      expect(keywordBrief.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
+      expect(keywordBrief.writes.join('')).toContain('sensitivity: private (fallback)')
+
+      const nonKeywordBrief = world({ quota: 1, env: gateways, ...options })
+      await nonKeywordBrief.agent({ ...coding, prompt: 'Document the outage root cause on 192.0.2.10:8443 for Example Corp.' })
+      expect(routeEvents(nonKeywordBrief).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'fallback' }, skipped: { qwen: 'ineligible', zcode: 'ineligible', 'opencode-go': 'ineligible', cursor: 'ineligible' } })
+      expect(nonKeywordBrief.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
+      expect(nonKeywordBrief.writes.join('')).toContain('sensitivity: private (fallback)')
+      expect(sensitivityCalls(nonKeywordBrief)).toHaveLength(name === 'has no router URL' ? 0 : 1)
     })
   }
-  test('credentialBrief matches credential words only, and mandatoryLabel still labels router work', () => {
-    for (const t of ['auth', 'authentication', 'secrets', 'credential', 'tokens', 'password', 'keys']) expect(credentialBrief(`the ${t} change`)).toBe(true)
-    for (const t of ['router', 'routing', 'memory', 'clusters', 'keyboard', 'monkey']) expect(credentialBrief(`the ${t} change`)).toBe(false)
+  test('secret-looking GitHub token values never reach the sensitivity fetch', async () => {
+    const githubToken = world({ quota: 1, env: gateways })
+    await githubToken.agent({ ...coding, prompt: `Use ghp_${'g'.repeat(36)} for this change.` })
+    expect(githubToken.allFetches).toHaveLength(0)
+    expect(sensitivityCalls(githubToken)).toHaveLength(0)
+
+    const vaultToken = world({ quota: 1, env: gateways })
+    await vaultToken.agent({ ...coding, prompt: `Use hvs.${'h'.repeat(20)} for this change.` })
+    expect(sensitivityCalls(vaultToken)).toHaveLength(0)
+    expect(routeEvents(vaultToken).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'material' } })
+  })
+  for (const [name, value] of [
+    ['hyphenated credential assignment', 'client-secret=Correct-Horse-Battery-Staple-99'],
+    ['underscore credential assignment', 'client_secret=prod_secret_with_underscores_1234567890'],
+    ['dotted credential assignment', 'client.secret=prod.secret.with.dots.1234567890'],
+    // Built at runtime so the secret scanner does not read a credential-shaped literal.
+    ['AWS temporary token', `ASIA${'Y7EXAMPLE1234567'}`],
+    ['Google or Gemini API key', `AIza${'A'.repeat(35)}`],
+    ['Vault batch token', `hvb.${'h'.repeat(20)}`],
+    ['Vault recovery token', `hvr.${'r'.repeat(20)}`],
+    ['Hugging Face token', `hf_${'f'.repeat(30)}`],
+    ['Slack app token', `xapp-${'a'.repeat(20)}`],
+    ['Slack xoxe token', `xoxe-${'x'.repeat(20)}`],
+  ] as const) {
+    test(`secret material ${name} never reaches the sensitivity model or a sandbox`, async () => {
+      const w = world({ quota: 1, env: gateways })
+      await w.agent({ ...coding, prompt: `Use ${value} for this code change.` })
+      expect(sensitivityCalls(w)).toHaveLength(0)
+      expect(routeEvents(w).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'material' } })
+      expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
+      expect(w.writes.join('')).not.toContain(value)
+    })
+  }
+  test('non-code text keeps the local route without a sensitivity decision', async () => {
+    const w = world({ quota: 1, env: gateways })
+    expect(text(await w.agent(textTask))).toContain('[routed: local small]')
+    expect(sensitivityCalls(w)).toHaveLength(0)
+    expect(routeEvents(w).at(-1)).not.toHaveProperty('sensitivity')
+  })
+  for (const word of ['credential', 'auth', 'secret', 'token', 'password', 'key']) {
+    test(`a ${word} task with a private model verdict never reaches a sandbox row`, async () => {
+      const w = world({ quota: 1, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: JSON.stringify({ verdict: 'private', reason: 'The task concerns credential handling.' }) } })
+      await w.agent({ ...coding, prompt: `Implement the ${word} change.` })
+      expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
+      expect(routeEvents(w).at(-1)).toMatchObject({ sensitivity: { verdict: 'private', source: 'model' }, skipped: { qwen: 'ineligible', zcode: 'ineligible', 'opencode-go': 'ineligible', cursor: 'ineligible' } })
+    })
+  }
+  test('mandatoryLabel still labels router work', () => {
     expect(mandatoryLabel('router work')).toBe('bulk-complex')
   })
   test('6: with Qwen and ZCode disabled, public-repo code takes OpenCode Go', async () => {
@@ -2148,11 +2279,15 @@ describe('routing batch', () => {
   })
   for (const quota of [0, 1]) {
     test(`9: sensitive public-repo code never reaches a sandbox (quota ${quota})`, async () => {
-      const w = world({ quota, env: gateways })
+      const w = world({ quota, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: '{"verdict":"private","reason":"It requires credential rotation."}' } })
       const call = { ...coding, prompt: 'Rotate the auth signing key using placeholders.' }
       const r = await w.agent(call)
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
-      expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
+      expect(sensitivityCalls(w)).toHaveLength(1)
+      expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f)).map((f) => f.url)).toEqual([
+        'https://api.github.com/repos/owner/project',
+        'http://localhost:8000/v1/chat/completions',
+      ])
       if (quota === 0) expect(text(r)).toContain('codex luna xhigh, class bulk-complex')
       else {
         expect(text(r)).toBe(refusedWith(HARNESS_LADDER))
@@ -2637,7 +2772,7 @@ describe('executor table', () => {
   // A spawn is refused only when every other eligible row is exhausted, failed, expired or not installed.
   for (const [name, options, task, note] of [
     ['codex exhausted, sandboxes missing', { quota: 1, zcodeAvailable: false }, coding, SANDBOX_LADDER],
-    ['codex failing, sandboxes disabled', { codexExit: 7, env: { AGENT_ROUTE_ZCODE_TOOLS: 'none' } }, coding, `codex: exit 7; ${SANDBOX_LADDER}`],
+    ['codex failing, sandboxes disabled', { codexExit: 7, env: { ...gateways, AGENT_ROUTE_ZCODE_TOOLS: 'none' } }, coding, `codex: exit 7; ${SANDBOX_LADDER}`],
     ['private, codex exhausted', { quota: 1, repository: { visibility: 'private', private: true } }, coding, HARNESS_LADDER],
     ['non-code, codex failing', { answer: '' }, { description: '[class: standard]', prompt: 'Implement the change.' }, `${HARNESS_LADDER}; codex: codex exec returned an empty final message`],
   ] as const) {
@@ -2795,7 +2930,7 @@ describe('failure reasons', () => {
     expect(routeEvents(w).at(-1).reasons).toEqual({})
   })
   test('a sandbox job that ended without a result records the reason on its outcome line', async () => {
-    const w = world({ quota: 1, sandboxRuns: { 'opencode-qwen': { exit: 1, output: 'FAIL|j-0123456789abcdef|no commit\n' } }, jobStatus: { 'j-0123456789abcdef': { end: 'no_commit' } } })
+    const w = world({ quota: 1, env: gateways, sandboxRuns: { 'opencode-qwen': { exit: 1, output: 'FAIL|j-0123456789abcdef|no commit\n' } }, jobStatus: { 'j-0123456789abcdef': { end: 'no_commit' } } })
     const result = text(await w.agent(coding))
     expect(result).toContain('[fell through: qwen: job no_commit]')
     expect(result.split('\n').at(-1)).toContain('[routed: zcode-job sandbox')
@@ -3128,12 +3263,12 @@ describe('sandbox job outcomes', () => {
   })
 
   test('the route event names the job, repository, executor and start of a sandbox placement', async () => {
-    const w = world({ quota: 1, now: NOW })
+    const w = world({ quota: 1, now: NOW, env: gateways })
     await w.agent(coding)
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', jobs: [{ job: 'j-0123456789abcdef', repo: 'owner/project', executor: 'qwen', started_ms: NOW }] })
   })
   test('a failed qwen job without a PR moves the task to the next executor and logs its outcome', async () => {
-    const w = world({ quota: 1, now: NOW, sandboxRuns: failsOnce, jobStatus: { [job(1)]: { state: 'failed', end: 'no_commit' } } })
+    const w = world({ quota: 1, now: NOW, env: gateways, sandboxRuns: failsOnce, jobStatus: { [job(1)]: { state: 'failed', end: 'no_commit' } } })
     expect(text(await w.agent(coding))).toContain('[routed: zcode-job sandbox')
     expect(outcomeLines(w)).toEqual([{ ts_ms: NOW, event: 'outcome', job: job(1), repo: 'owner/project', executor: 'qwen', end: 'no_commit', ended_ms: NOW, reason: 'job no_commit' }])
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'zcode', fell_through_from: ['qwen'], reasons: { qwen: 'job no_commit' }, skipped: { qwen: 'failed' },
@@ -3148,7 +3283,7 @@ describe('sandbox job outcomes', () => {
     ['status hangs past 15 seconds', { statusHangs: true }],
   ] as const) {
     test(`a failed start whose job ${name} never starts a duplicate`, async () => {
-      const w = world({ quota: 1, now: NOW, sandboxRuns: { 'opencode-qwen': { exit: 1, output: `FAIL|${job(1)}|timeout\n` } }, ...options })
+      const w = world({ quota: 1, now: NOW, env: gateways, sandboxRuns: { 'opencode-qwen': { exit: 1, output: `FAIL|${job(1)}|timeout\n` } }, ...options })
       expect(text(await w.agent(coding))).toStartWith('FAIL | router |')
       expect(starts(w)).toHaveLength(1)
       expect(outcomeLines(w)).toEqual([])
@@ -3156,21 +3291,21 @@ describe('sandbox job outcomes', () => {
     })
   }
   test('a cancelled job stops routing for the task, with its outcome and reason logged', async () => {
-    const w = world({ quota: 1, now: NOW, sandboxRuns: failsOnce, jobStatus: { [job(1)]: { state: 'cancelled', end: 'cancelled' } } })
+    const w = world({ quota: 1, now: NOW, env: gateways, sandboxRuns: failsOnce, jobStatus: { [job(1)]: { state: 'cancelled', end: 'cancelled' } } })
     expect(text(await w.agent(coding))).toContain(`job ${job(1)} was cancelled; routing stops for this task`)
     expect(starts(w)).toHaveLength(1)
     expect(outcomeLines(w)).toEqual([{ ts_ms: NOW, event: 'outcome', job: job(1), repo: 'owner/project', executor: 'qwen', end: 'cancelled', ended_ms: NOW, reason: 'job cancelled' }])
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', reason: 'sandbox job cancelled', fell_through_from: [] })
   })
   test('the next sandbox placement records each pending job that has ended, anchored to start plus duration', async () => {
-    const w = world({ quota: 1, now: NOW, logTail: [placed(1, NOW - 70 * MIN, 'owner/project', 'zcode', NOW - 80 * MIN), placed(2), placed(3), ended(3, 'pr_opened')],
+    const w = world({ quota: 1, now: NOW, env: gateways, logTail: [placed(1, NOW - 70 * MIN, 'owner/project', 'zcode', NOW - 80 * MIN), placed(2), placed(3), ended(3, 'pr_opened')],
       jobStatus: { [job(1)]: { end: 'timeout', duration: 600 }, [job(2)]: { state: 'running', end: '' } } })
     await w.agent(coding)
     expect(statusReads(w).map((c) => c.argv[2]).sort()).toEqual([job(1), job(2)])
     expect(outcomeLines(w)).toEqual([{ ts_ms: NOW, event: 'outcome', job: job(1), repo: 'owner/project', executor: 'zcode', end: 'timeout', ended_ms: NOW - 70 * MIN, reason: 'job timeout' }])
   })
   test('status reads stop at the three-second budget and routing continues', async () => {
-    const w = world({ quota: 1, now: NOW, logTail: [placed(1)], statusHangs: true })
+    const w = world({ quota: 1, now: NOW, env: gateways, logTail: [placed(1)], statusHangs: true })
     expect(text(await w.agent(coding))).toContain('[routed: Qwen sandbox')
     expect(outcomeLines(w)).toEqual([])
   })
@@ -3181,17 +3316,17 @@ describe('sandbox job outcomes', () => {
     expect(statusReads(w)).toEqual([])
   })
   test('a truncated log read counts as no history', async () => {
-    const w = world({ quota: 1, now: NOW, logTail: [ended(1, 'no_commit'), ended(2, 'refused'), placed(3)], tailTruncated: true })
+    const w = world({ quota: 1, now: NOW, env: gateways, logTail: [ended(1, 'no_commit'), ended(2, 'refused'), placed(3)], tailTruncated: true })
     expect(text(await w.agent(coding))).toContain('[routed: Qwen sandbox')
     expect(statusReads(w)).toEqual([])
   })
   test('an executor with repeated recent failures on the repository is skipped for it', async () => {
-    const w = world({ quota: 1, now: NOW, env: { ...gateways, AGENT_ROUTE_ZCODE_TOOLS: 'zcode opencode' }, logTail: [placed(1), placed(2), placed(3)], jobStatus: { [job(1)]: { end: 'no_commit' }, [job(2)]: { end: 'refused' }, [job(3)]: { state: 'running', end: '' } },
+    const w = world({ quota: 1, now: NOW, env: { ...gateways, AGENT_ROUTE_ZCODE_TOOLS: 'zcode opencode' }, gatewayAnswer: { [SENSITIVITY_ALIAS]: DEFAULT_PUBLIC_SENSITIVITY }, logTail: [placed(1), placed(2), placed(3)], jobStatus: { [job(1)]: { end: 'no_commit' }, [job(2)]: { end: 'refused' }, [job(3)]: { state: 'running', end: '' } },
       sandboxRuns: { opencode: { exit: 0, output: `DONE|${job(4)}|${PR.html_url}\n` } } })
     expect(text(await w.agent(coding))).toContain('[routed: OpenCode Go sandbox')
     expect(starts(w).map((c) => c.argv[3])).toEqual(['opencode'])
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'opencode-go', skipped: { qwen: 'not_installed', zcode: 'recent_failures' } })
-    const other = world({ quota: 1, now: NOW, logTail: [ended(1, 'no_commit', NOW - MIN, 'owner/other'), ended(2, 'refused', NOW - MIN, 'owner/other')] })
+    const other = world({ quota: 1, now: NOW, env: gateways, gatewayAnswer: { [SENSITIVITY_ALIAS]: DEFAULT_PUBLIC_SENSITIVITY }, logTail: [ended(1, 'no_commit', NOW - MIN, 'owner/other'), ended(2, 'refused', NOW - MIN, 'owner/other')] })
     expect(text(await other.agent(coding))).toContain('[routed: Qwen sandbox')
   })
 })
