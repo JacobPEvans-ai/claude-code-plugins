@@ -35,7 +35,8 @@ pass; title/description/linked-issues were regenerated via a delegate (routing p
 before reporting ready; bot-authored PRs (dependabot, release-please,
 claude, github-actions, etc.) were never filtered out; org mode never
 crossed the org boundary the current repo implies; and, on a Git Flow repo,
-the post-merge `develop`→`main` promotion via `/promote-release` was added
+the post-merge promotion of `promote/<version>` into `main` via
+`/promote-release` was added
 to the active session checklist as mandatory, not optional.
 
 ## Phase 1: PR Discovery and Targeting
@@ -119,7 +120,7 @@ After completion, validate locally.
 
 If `mergeStateStatus` is `BEHIND`, follow the
 [Git Town rule](https://github.com/dryvist/ai-llm-prompts/blob/main/auto-ai-agent/instructions/agentsmd/rules/on-demand/git-flow.md)
-to sync the PR branch before continuing. For a `develop` → `main` promotion PR, use `/promote-release`.
+to sync the PR branch before continuing. For a `promote/<version>` → `main` promotion PR, use `/promote-release`.
 
 Check if the PR has git conflicts (`mergeable` field). **`mergeable: MERGEABLE` means no git
 conflicts only** — it does NOT mean the PR is fully ready to merge. **If conflicts**: sync the

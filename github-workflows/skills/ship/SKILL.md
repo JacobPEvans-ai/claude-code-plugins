@@ -83,7 +83,7 @@ git status --porcelain
    session id (`<runtime>-<host>-<8hex>`) in the PR body. The org `pr-automerge`
    workflow arms non-draft PRs; agents never arm auto-merge.
    It uses a merge commit for PRs into `main` on git-flow repos and squash otherwise.
-   It never arms `develop` to `main` promotions. Never assume the PR merged;
+   Never assume the PR merged;
    verify its state before reporting.
 8. **Pacing**: Run `sleep 2` after `gh pr create` to allow GitHub to index the PR
 9. Capture PR number from output (look for `pull/NUMBER` pattern)
@@ -151,9 +151,11 @@ when `/finalize-pr` invokes `/resolve-pr-threads`.
 
 > [!IMPORTANT]
 > If the repo uses Git Flow (default branch is `develop`), once the feature PR is
-> merged into `develop` and validated, you must promote `develop` to `main` using
-> `/promote-release`. Add a reminder to the active session checklist to perform
-> this merge before completing the session.
+> merged into `develop` and validated, you must drive the `promote/<version>`
+> promotion into `main` using `/promote-release`. The shared promotion workflow
+> opens that PR automatically on the next release commit or push to `main`;
+> never create a `develop`-headed PR into `main` by hand. Add a reminder to the
+> active session checklist to perform this merge before completing the session.
 
 ### Multiple PRs (2+ PRs in list)
 

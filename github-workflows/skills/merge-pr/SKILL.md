@@ -45,8 +45,8 @@ see /gh-cli-patterns Canonical Default-Branch Detection):
 
 - **`--squash`/`-s` was passed → abort immediately, no finalize**:
 
-  > "This is a `develop` → `main` promotion PR on a git-flow repo. `main` accepts
-  > merge commits only — squash and rebase are banned by ruleset, no exceptions.
+  > "This is a `promote/<version>` → `main` promotion PR on a git-flow repo.
+  > `main` accepts merge commits only — squash and rebase are banned by ruleset, no exceptions.
   > Run `/promote-release` instead, or merge manually with `gh pr merge --merge`."
 
 - **No `--squash` (default merge commit) → this is a legitimate promotion.**
@@ -212,6 +212,6 @@ Invoke at any time — auto-finalizes if needed:
 - finalize-pr (github-workflows) — invoked automatically by merge-pr when blockers are found
 - rebase-pr (github-workflows) — alternative merge strategy that preserves commit history
 - pr-stacks (github-workflows) — stack-aware merge: landing a layer takes every unmerged layer below it
-- promote-release (github-workflows) — the develop → main promotion path; calls this skill directly and never squashes
+- promote-release (github-workflows) — the `promote/<version>` → `main` promotion path; calls this skill directly and never squashes
 - pr-standards (github-workflows) — PR authoring and review standards
 - gh-cli-patterns (github-workflows) — canonical gh CLI command shapes, placeholder convention, PR-readiness gate, default-branch detection

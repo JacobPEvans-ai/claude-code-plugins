@@ -50,8 +50,8 @@ DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.na
 If `BASE_BRANCH == main` AND `DEFAULT_BRANCH == develop` (repo is on git-flow — see
 /gh-cli-patterns Canonical Default-Branch Detection), **ABORT**:
 
-> "This is a `develop` → `main` promotion PR on a git-flow repo. Direct pushes to
-> `main` are banned there — `main` accepts merge commits only, with no exceptions.
+> "This is a `promote/<version>` → `main` promotion PR on a git-flow repo.
+> Direct pushes to `main` are banned there — `main` accepts merge commits only, with no exceptions.
 > Run `/promote-release` instead."
 
 Otherwise continue — `BASE_BRANCH` is either a trunk repo's `main` or a git-flow
@@ -224,7 +224,7 @@ This commonly occurs with release-please CHANGELOG.md entries that don't conform
 
 - **merge-pr** (github-workflows) — Merge after rebase-pr prepares the branch
 - **finalize-pr** (github-workflows) — Full PR finalization pipeline that may invoke rebase-pr
-- **promote-release** (github-workflows) — The develop → main merge-commit path this skill refuses to substitute for
+- **promote-release** (github-workflows) — The `promote/<version>` → `main` merge-commit path this skill refuses to substitute for
 - **pr-stacks** (github-workflows) — stack submission and merge tracking
 - For branch creation and PR-branch sync, follow the [Git Town rule](https://github.com/dryvist/ai-llm-prompts/blob/main/auto-ai-agent/instructions/agentsmd/rules/on-demand/git-flow.md).
 - **pr-standards** (github-workflows) — PR creation and review standards
