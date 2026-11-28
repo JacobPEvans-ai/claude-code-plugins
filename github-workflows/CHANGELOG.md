@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.16.2](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/github-workflows-v6.16.1...github-workflows-v6.16.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **github-workflows:** drive the automatic promote/&lt;version&gt; promotion ([#959](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/959)) ([5b7ee81](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/5b7ee815c93ac080ecba47ba1f5b05d19a9222c7))
+
 ## [6.16.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/github-workflows-v6.16.0...github-workflows-v6.16.1) (2026-11-22)
 
 
