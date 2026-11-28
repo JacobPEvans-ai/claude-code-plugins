@@ -1,5 +1,49 @@
 # Changelog
 
+## [6.17.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/github-workflows-v6.16.2...github-workflows-v6.17.0) (2026-11-28)
+
+
+### Features
+
+* **agent:** autonomous zcode run j-fae1382ba350cc89 ([#691](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/691)) ([565834d](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/565834da9a833daaeeabeb88306946ae16a1da39))
+* **ai-cli-harness-better-practices:** compose agentops skills in wrap-up ([#840](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/840)) ([d24b901](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/d24b901280482daa1b89124bafcc3775368cb19c))
+* **ai-cli-harness-better-practices:** use external handoff workflow ([a4cfb34](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/a4cfb343429a1986a9b1e62322a8502dc21b1f75))
+* **ai-delegation:** run agentops orchestrate from premium-agent-orchestration ([#831](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/831)) ([8077bad](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/8077bad312da6ce1b761bb4d7a5bd64cbee09032))
+* **delegation:** Codex-first router, three-kind ladder, startup quota line ([#632](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/632)) ([98530d2](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/98530d2a27478974e515466eed5f42daa61a88e8))
+* **git-workflows:** retire sync-main and git-flow-next in favor of Git Town ([#653](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/653)) ([3930fda](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/3930fda284cbd998b2cedff739c6c5b8e38e4dfd))
+* **github-workflows:** add pr-stacks skill for stacked pull requests ([3732651](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/373265134c8803dfd388f6151fdacedcab8f0c23))
+* **github-workflows:** add pr-stacks skill for stacked pull requests ([058fd5e](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/058fd5e4da49b1c8be262a801015a8ccc18e9e6c))
+* **github-workflows:** add trigger and execution eval suites for ship, finalize-pr and merge-pr ([#740](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/740)) ([146ce26](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/146ce262defe7e8c4f51bf0d4ecc3bc9379a9b24))
+* **github-workflows:** check review claims with agentops instead of superpowers ([#828](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/828)) ([6f3e23c](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/6f3e23c2772b63929fd23d08c638f65a6923b1e9))
+* **github-workflows:** finalize-pr handles feedback, BEHIND branches and unreported checks ([b663c23](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/b663c23af3b90f41ebe91d7ff3e851f4eaf2acd5))
+* **github-workflows:** pr-sweep runs rounds until no stale PR remains ([f9405a1](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/f9405a160a03501f485397c058cd35ed819915e9))
+* **github-workflows:** pr-sweep runs rounds until no stale PR remains ([#630](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/630)) ([9952987](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/9952987bc464627b4adf0a0e8dd46952352a8952))
+* **github-workflows:** promote-release prepares the release on develop ([42fd643](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/42fd64313de394eb01e4b3d8ed1e68c6b5e228bb))
+* **github-workflows:** promote-release prepares the release on develop ([#610](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/610)) ([bbfa48c](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/bbfa48c7b6c9af766e3ef7a8497de0e66e37930d))
+* **github-workflows:** readiness gate requires answered feedback and reported required checks ([93463bc](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/93463bc265a43bec180854f37fa8ca29b93e8716))
+* **github-workflows:** resolve-pr-threads treats all PR feedback as review ([7f28d39](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/7f28d393fa94c6312368dd66327fb8952f6016f5))
+* **github-workflows:** treat all PR feedback as review ([#609](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/609)) ([7954eae](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/7954eaecd4d894a742dafaf22837858fdecee6ba))
+* **jpe-ai-delegation:** add maintainer-specific delegation ladder plugin ([#613](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/613)) ([0569795](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/05697952f1808478b0b1de7dc67b6fb3bb46603b))
+* **skills:** Claude project routes and cloud-session skips ([#576](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/576)) ([7c4912a](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/7c4912a5450767fc804595ee2946266225a5f5fb))
+* **skills:** reach Zammad over REST when its MCP is not attached ([#544](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/544)) ([8f478f6](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/8f478f682e0a4d636f84842d50c4ec870616527c))
+
+
+### Bug Fixes
+
+* agents hold PRs with draft or human:review and never arm auto-merge ([#657](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/657)) ([7b84bd4](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/7b84bd41038fa8211959b19a79442ab3507d78e4))
+* **github-workflows:** drive the automatic promote/&lt;version&gt; promotion ([#959](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/959)) ([5b7ee81](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/5b7ee815c93ac080ecba47ba1f5b05d19a9222c7))
+* **github-workflows:** drop the needs-human status word, narrow human:review ([#584](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/584)) ([0ff580d](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/0ff580d1be5b15c0e362d5b4c92b3e26fb935bd3))
+* **github-workflows:** ledger tracks review-bot findings, not the bot comment; list every check context ([fcf62ad](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/fcf62ad752cd4d6420585a21109541aa9ec8295b))
+* **github-workflows:** mark a draft promotion PR ready in promote-release ([a0791c7](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/a0791c71fc4f7a7bc7c32760b50f189af90ae7ee))
+* **github-workflows:** mark a draft promotion PR ready in promote-release ([#614](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/614)) ([1beb1b1](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/1beb1b1d194a53d010199e91bf99757042ba93f3))
+* **github-workflows:** name the resolve mutation in the resolver summary ([d90d686](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/d90d68654f7c8f940f7152d1931974dad469e4df))
+* **github-workflows:** narrow human:review requests ([22fefcb](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/22fefcb7a78d65d48176cb9169cd4e95df5a05ef))
+* **github-workflows:** refresh-repo fast-forwards develop and main ([#567](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/567)) ([774488d](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/774488dbdc00ffb573086cb80189f3c2d049c260))
+* **github-workflows:** remove the dead post-pr-create PostToolUse hook ([5f5fd4e](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/5f5fd4e3de73c27d98b64f483a96134174b3d557))
+* **github-workflows:** reword the resolver summary ([9942e22](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/9942e2248583e5d14fd478f457ff5c42f99d2aea))
+* **hooks:** remove the worktree-reminder and post-pr-create hooks ([e5a21dd](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/e5a21dd791d5119fb55db3d64ad933aae1afca83))
+* **jpe-ai-delegation:** the ladder skill points at the routing statement ([#895](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/895)) ([d005224](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/d005224fbcbdd7f7588638c3d1a5cd276929d0a7))
+
 ## [6.16.2](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/github-workflows-v6.16.1...github-workflows-v6.16.2) (2026-11-28)
 
 
