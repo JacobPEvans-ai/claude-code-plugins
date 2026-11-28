@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.85.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.85.0...v6.85.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** deliver a background result into the running turn ([#940](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/940)) ([f1394c4](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/f1394c46922cf6af1f01c4ee637aa2e7a26b4d1f))
+
 ## [6.85.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.84.1...v6.85.0) (2026-11-27)
 
 
