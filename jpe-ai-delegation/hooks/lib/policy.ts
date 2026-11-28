@@ -366,9 +366,10 @@ export function checkHarnessResult(json: unknown, alias: string): { ok: true; te
   return { ok: true, text }
 }
 
-// Raw chat templates and tool calls are control syntax, not user-facing answers.
+// Raw chat templates and tool calls are control syntax, not user-facing answers. Whole `<|…|>` tokens and their
+// one-sided forms (`<|channel>`, `<tool_call|>`, `<|"|>`) match, as do `<tool_call>` and `<function_call>` tags.
 export function hasChatTemplateLeak(text: string): boolean {
-  return /<\|[\w]+\|>|<\/?(?:tool_call|function_call)>/i.test(text)
+  return /<\|[^>\s]*\|?>|<\/?(?:tool_call|function_call)\|?>/i.test(text)
 }
 
 // The input and output tokens a final executor output reports; total tokens are their sum. A counter that is missing,
@@ -494,15 +495,20 @@ export function recentAttemptFailures(outcomes: readonly AttemptOutcome[], execu
   return attemptCooldownEnd(outcomes, executor, nowMs) !== undefined
 }
 const FAILED_ENDS: readonly JobEnd[] = ['no_commit', 'timeout', 'rate_limited', 'refused']
-// True while two or more of an executor's last three ended jobs for this repository (by end anchor) failed: 60 minutes
-// after the newest failure's end anchor, or until the end of that UTC hour when it is `rate_limited`.
-export function recentFailures(outcomes: readonly JobOutcome[], executor: Executor, repo: string, nowMs: number): boolean {
+// The wall-clock time in milliseconds at which an executor's per-repository job cooldown ends, or undefined while it is
+// not cooling down. Two or more of the executor's last three ended jobs for this repository (by end anchor) failed:
+// 60 minutes after the newest failure's end anchor, or until the end of that UTC hour when it is `rate_limited`.
+export function jobCooldownEnd(outcomes: readonly JobOutcome[], executor: Executor, repo: string, nowMs: number): number | undefined {
   const failed = outcomes.filter((o) => o.executor === executor && o.repo.toLowerCase() === repo.toLowerCase())
     .sort((a, b) => a.ended_ms - b.ended_ms).slice(-3).filter((o) => FAILED_ENDS.includes(o.end))
   const newest = failed.at(-1)
-  if (failed.length < 2 || !newest) return false
+  if (failed.length < 2 || !newest) return undefined
   const until = newest.end === 'rate_limited' ? (Math.floor(newest.ended_ms / 3_600_000) + 1) * 3_600_000 : newest.ended_ms + 3_600_000
-  return nowMs < until
+  return nowMs < until ? until : undefined
+}
+// True while an executor's per-repository job cooldown is running.
+export function recentFailures(outcomes: readonly JobOutcome[], executor: Executor, repo: string, nowMs: number): boolean {
+  return jobCooldownEnd(outcomes, executor, repo, nowMs) !== undefined
 }
 
 // Foreground attempts on one executor row run one at a time inside one hook process. Each call chains first in, first

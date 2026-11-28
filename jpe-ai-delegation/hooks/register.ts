@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptCooldownEnd, attemptEnd, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobHistory, jobState, newRowQueue, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, usageFromChatResponse, usageFromClaudeResult, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
+import { CLASSIFIER, CLASSIFIER_ALIAS, CODEX, CODEX_QUOTA_THRESHOLD, JUDGE, JUDGE_ALIAS, JUDGE_OUTPUT_TOKENS, LOCAL_OUTPUT_TOKENS, QUOTA_SELECTOR, ROUTED_CHILD_TIMEOUT_MS, EXECUTOR_TABLE, attemptCooldownEnd, attemptEnd, attemptHistory, budgetsFromMetrics, codexArgv, checkHarnessResult, codingTask, credentialBrief, networkTask, eligibleRows, endAnchor, estimateTokens, explicitLabel, forbiddenHarnessModel, forbiddenModel, hasChatTemplateLeak, harnessArgv, harnessEnv, isAdvisory, isGenericType, isShellCAsk, jobCooldownEnd, jobHistory, jobState, newRowQueue, recentAttemptFailures, recentFailures, localTask, mandatoryLabel, newestModel, mergeExecutorRows, metricsResult, parseCodexQuota, parseRetiredAgents, parseVerdict, pickLabel, pickLocal, quotaFromMetrics, rankRows, repositoryFromOrigin, retiredAgent, reviewOnly, safePayload, scoreWindows, taggedText, usageFromChatResponse, usageFromClaudeResult, KIND_CLASSIFIER, parseKind, subagentRunsDeniedCommand } from './lib/policy'
 import type { AttemptEnd, CodexQuotaRead, Executor, ExecutorRow, HarnessMcpConfig, JobOutcome, JobRecord, JobState, Label, QuotaReason, QuotaRow, Route, Sandbox, Score, SkipReason, Kind, TokenUsage, Verdict } from './lib/policy'
 import { customAgentSandbox, parseAgentDefinition } from './lib/agent-definition'
 import type { AgentDefinition } from './lib/agent-definition'
@@ -25,6 +25,8 @@ const CODEX_QUOTA_TTL_MS = 14_400_000
 const CODEX_QUOTA_FAILURE_TTL_MS = 600_000
 const CODEX_QUOTA_KEY = 'codex-quota'
 const HARNESS_FALLBACK_MS = 30_000
+// The detached background path waits at most this long for a cooling executor row before it gives up.
+const BACKGROUND_WAIT_MAX_MS = 2_700_000
 // The Codex child streams through `$.process.spawn`: `$.process.run` stops every child at ten minutes, and a long
 // task is not a failure. This bound ends the stream instead; leaving the loop kills the child.
 const LONG_RUN_MS = 3_600_000
@@ -459,6 +461,12 @@ async function logQueued($: Engine, executor: Executor, ahead: number): Promise<
   await logDecision($, JSON.stringify({ ts_ms, event: 'queued', executor, ahead }))
 }
 
+// One log line when the detached background path starts to wait for a cooling executor row, with the wait's end.
+async function logWaiting($: Engine, executor: Executor, until: number): Promise<void> {
+  const ts_ms = await clockNow($)
+  await logDecision($, JSON.stringify({ ts_ms, event: 'waiting', executor, until }))
+}
+
 // One attempt on one executor row. Foreground attempts queue per row, first in first out; the detached background
 // path never enters a queue and never makes one wait. The wait callback does not block the queue on the log write.
 function queuedAttempt<T>($: Engine, row: Executor, foreground: boolean, work: () => Promise<T>): Promise<T> {
@@ -643,16 +651,29 @@ const NETWORK_NO_EXECUTOR_REASON = 'network work: no harness executor answered'
 const MCP_NO_EXECUTOR = 'agent needs its MCP servers; no harness executor answered'
 const CLAUDE_SUBAGENT_DENY = 'Claude subagents are disabled by operator order; delegate through a non-Claude executor'
 
+// The earliest time in milliseconds at which an executor skipped for its recent failures may run again, with the row
+// that names it, or undefined when none was skipped for that reason or its cooldown cannot be dated without a clock
+// reading. Harness and Codex rows cool down by routed attempt and sandbox rows by their jobs for the repository;
+// `cancelled` ends never cool an executor down. When `repo` and the job outcomes are unknown, only the routed-attempt
+// cooldown is dated, which is what a refusal's retry time uses.
+async function earliestCooldownEnd($: Engine, event: RouteEvent, repo: string | undefined, jobs: JobOutcome[] | undefined): Promise<{ executor: Executor; end: number } | undefined> {
+  const cooling = Object.keys(event.skipped).filter((id) => event.skipped[id] === 'recent_failures')
+  const now = cooling.length ? await clockNow($) : null
+  if (now === null) return undefined
+  const attempts = attemptHistory(await decisionLogLines($), now)
+  const ends = cooling.flatMap((id) => {
+    const candidates = [attemptCooldownEnd(attempts, id, now)]
+    if (repo && jobs) candidates.push(jobCooldownEnd(jobs, id, repo, now))
+    return candidates.filter((end) => end !== undefined).map((end) => ({ executor: id as Executor, end }))
+  })
+  return ends.length ? ends.reduce((a, b) => (a.end <= b.end ? a : b)) : undefined
+}
+
 // The earliest time in milliseconds at which an executor skipped for its recent failures may run again, or undefined
 // when none was skipped for that reason or its cooldown cannot be dated without a clock reading. Only the routed-attempt
 // cooldown dates a retry; `cancelled` ends never cool an executor down.
 async function retryAfterMs($: Engine, event: RouteEvent): Promise<number | undefined> {
-  const cooling = Object.keys(event.skipped).filter((id) => event.skipped[id] === 'recent_failures')
-  const now = cooling.length ? await clockNow($) : null
-  if (now === null) return undefined
-  const outcomes = attemptHistory(await decisionLogLines($), now)
-  const ends = cooling.flatMap((id) => { const end = attemptCooldownEnd(outcomes, id, now); return end === undefined ? [] : [end] })
-  return ends.length ? Math.min(...ends) : undefined
+  return (await earliestCooldownEnd($, event, undefined, undefined))?.end
 }
 
 // A ladder with no answer is refused, never handed to the session. When an executor was cut off at its time limit,
@@ -1187,12 +1208,18 @@ async function route($: Engine, e: AgentCall, foreground = false): Promise<unkno
     event.local = { alias: local?.alias ?? null, est_tokens: estimate }
     if (base && local) {
       const out = await runLocal($, e, base, local.alias, local.timeoutMs)
-      if (out) {
+      if (out && hasChatTemplateLeak(out.text)) {
+        $.ui.log(`ai-delegation: local ${local.alias} failed: answer contains chat-template syntax`)
+        await logDecision($, `local ${local.alias} failure: answer contains chat-template syntax`)
+        event.reasons[`local ${local.alias}`] = 'answer contains chat-template syntax'
+        event.fell_through_from.push(`local ${local.alias}`)
+      } else if (out) {
         await logRoute($, event, `local ${local.alias}`, 'checked local answer')
         return routedResult(e, 'ai-delegation-local', out.text, `[routed: local ${local.alias}]`, 0, out.usage)
+      } else {
+        event.reasons[`local ${local.alias}`] = 'no checked answer'
+        event.fell_through_from.push(`local ${local.alias}`)
       }
-      event.reasons[`local ${local.alias}`] = 'no checked answer'
-      event.fell_through_from.push(`local ${local.alias}`)
     }
   }
 
@@ -1241,96 +1268,117 @@ async function route($: Engine, e: AgentCall, foreground = false): Promise<unkno
     }
   }
   // Outcomes of earlier sandbox jobs, read only when a sandbox executor is a candidate; an executor failing repeatedly
-  // on this repository sits out for a while.
+  // on this repository sits out for a while. The outcomes are read once and serve every pass of the row loop.
   let outcomes: JobOutcome[] | undefined
   const tools = await sandboxTools($)
-  let harnessDown = false
-  for (const executor of ranked.order.filter((id) => quota.nativeSkips[id] === undefined)) {
-    const row = rows.find((r) => r.id === executor)!
-    if (row.transport === 'harness' && harnessViolations.has(executor)) {
-      skipped[executor] = 'violation'
-      continue
-    }
-    if ((row.transport === 'harness' && base && !harnessDown) || row.transport === 'codex') {
-      const attemptNow = await clockNow($)
-      if (attemptNow !== null && recentAttemptFailures(attemptHistory(await decisionLogLines($), attemptNow), executor, attemptNow)) {
-        skipped[executor] = 'recent_failures'
+  // One pass over the ranked rows: the first answer wins, and every fall-through is recorded on the route event. The
+  // pass-local state (the harness outage) starts fresh, so a later pass judges each row again at its own time.
+  const runRows = async (): Promise<unknown | undefined> => {
+    let harnessDown = false
+    for (const executor of ranked.order.filter((id) => quota.nativeSkips[id] === undefined)) {
+      const row = rows.find((r) => r.id === executor)!
+      if (row.transport === 'harness' && harnessViolations.has(executor)) {
+        skipped[executor] = 'violation'
         continue
       }
-    }
-    let result: unknown | undefined
-    let reason: string | undefined
-    let cancelled = false
-    let unaccepted = false
-    let unconfirmed = false
-    if (row.transport === 'harness') {
-      if (!base) { skipped[executor] = 'not_installed'; continue }
-      if (harnessDown) { skipped[executor] = 'failed'; continue }
-      const { attempt, startedAt } = await queuedAttempt($, row.id, foreground, async () => {
-        // The attempt's own clock starts when it holds the row; a queued wait never counts toward this row's pace.
-        const startedAt = await clockNow($)
-        return { attempt: await runHarnessRung($, e, row, customSandbox, rungLabel, mcp), startedAt }
-      })
-      result = attempt.result
-      reason = attempt.reason
-      if (!result) {
-        skipped[executor] = harnessViolations.has(executor) ? 'violation' : 'failed'
-        const ended = await clockNow($)
-        if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
+      if ((row.transport === 'harness' && base && !harnessDown) || row.transport === 'codex') {
+        const attemptNow = await clockNow($)
+        if (attemptNow !== null && recentAttemptFailures(attemptHistory(await decisionLogLines($), attemptNow), executor, attemptNow)) {
+          skipped[executor] = 'recent_failures'
+          continue
+        }
       }
-    } else if (row.transport === 'codex') {
-      const attempt = await queuedAttempt($, row.id, foreground, () => runCodexRung($, e, customSandbox, rungLabel))
-      result = attempt.result
-      reason = attempt.reason
-      if (!result) skipped[executor] = 'failed'
-    } else if (row.transport === 'router-chat' && event.fell_through_from.includes(`local ${row.model}`)) {
-      // The local rung already sent this prompt to this alias and it failed its check.
-      skipped[executor] = 'failed'
-      reason = 'no checked answer'
-    } else if (row.transport === 'router-chat') {
-      // The local rung's chat call and size gate, under the row's router model; never code or tool work. A prompt whose
-      // estimate exceeds 60% of the model's window, or a model with no known window, is skipped.
-      const fits = textOnly && base ? ((await localModelWindows($, base))[row.model!] ?? 0) * 0.6 >= estimateTokens(e.prompt) : false
-      const out = fits ? await queuedAttempt($, row.id, foreground, () => runLocal($, e, base!, row.model!, TEXT_EXECUTOR_TIMEOUT_MS)) : undefined
-      if (out && hasChatTemplateLeak(out.text)) {
-        $.ui.log('ai-delegation: router-chat failed: answer contains chat-template syntax')
-        await logDecision($, 'router-chat failure: answer contains chat-template syntax')
+      let result: unknown | undefined
+      let reason: string | undefined
+      let cancelled = false
+      let unaccepted = false
+      let unconfirmed = false
+      if (row.transport === 'harness') {
+        if (!base) { skipped[executor] = 'not_installed'; continue }
+        if (harnessDown) { skipped[executor] = 'failed'; continue }
+        const { attempt, startedAt } = await queuedAttempt($, row.id, foreground, async () => {
+          // The attempt's own clock starts when it holds the row; a queued wait never counts toward this row's pace.
+          const startedAt = await clockNow($)
+          return { attempt: await runHarnessRung($, e, row, customSandbox, rungLabel, mcp), startedAt }
+        })
+        result = attempt.result
+        reason = attempt.reason
+        if (!result) {
+          skipped[executor] = harnessViolations.has(executor) ? 'violation' : 'failed'
+          const ended = await clockNow($)
+          if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
+        }
+      } else if (row.transport === 'codex') {
+        const attempt = await queuedAttempt($, row.id, foreground, () => runCodexRung($, e, customSandbox, rungLabel))
+        result = attempt.result
+        reason = attempt.reason
+        if (!result) skipped[executor] = 'failed'
+      } else if (row.transport === 'router-chat' && event.fell_through_from.includes(`local ${row.model}`)) {
+        // The local rung already sent this prompt to this alias and it failed its check.
         skipped[executor] = 'failed'
-        reason = 'answer contains chat-template syntax'
-      } else if (out) result = routedResult(e, 'ai-delegation-router-chat', out.text, `[routed: router-chat ${row.model}]`, 0, out.usage)
-      else if (!textOnly || (base && !fits)) { skipped[executor] = 'ineligible'; reason = 'not eligible' }
-      else if (base) { skipped[executor] = 'failed'; reason = 'no checked answer' }
-      else { skipped[executor] = 'not_installed'; reason = 'not installed' }
-    } else if (!repo || (tools && !tools.includes(row.tool!))) {
-      skipped[executor] = repo ? 'not_installed' : 'ineligible'
-      reason = repo ? 'not installed' : 'not eligible'
-    } else if (recentFailures(outcomes ??= await jobOutcomes($, now), executor, repo, now)) {
-      skipped[executor] = 'recent_failures'
-    } else {
-      const run = await queuedAttempt($, row.id, foreground, () => runSandboxExecutor($, e, repo, row.tool!, executor))
-      if (run.record) event.jobs.push(run.record)
-      if (run.record && run.state) await logOutcomes($, [{ record: run.record, state: run.state }])
-      if (!run.result) skipped[executor] = run.state || run.refused ? 'failed' : 'not_installed'
-      reason = run.reason
-      cancelled = run.state?.end === 'cancelled'
-      result = run.result
-      unconfirmed = Boolean(result) && run.unconfirmed === true
-      unaccepted = Boolean(result) && !run.accepted && !unconfirmed
+        reason = 'no checked answer'
+      } else if (row.transport === 'router-chat') {
+        // The local rung's chat call and size gate, under the row's router model; never code or tool work. A prompt whose
+        // estimate exceeds 60% of the model's window, or a model with no known window, is skipped.
+        const fits = textOnly && base ? ((await localModelWindows($, base))[row.model!] ?? 0) * 0.6 >= estimateTokens(e.prompt) : false
+        const out = fits ? await queuedAttempt($, row.id, foreground, () => runLocal($, e, base!, row.model!, TEXT_EXECUTOR_TIMEOUT_MS)) : undefined
+        if (out && hasChatTemplateLeak(out.text)) {
+          $.ui.log('ai-delegation: router-chat failed: answer contains chat-template syntax')
+          await logDecision($, 'router-chat failure: answer contains chat-template syntax')
+          skipped[executor] = 'failed'
+          reason = 'answer contains chat-template syntax'
+        } else if (out) result = routedResult(e, 'ai-delegation-router-chat', out.text, `[routed: router-chat ${row.model}]`, 0, out.usage)
+        else if (!textOnly || (base && !fits)) { skipped[executor] = 'ineligible'; reason = 'not eligible' }
+        else if (base) { skipped[executor] = 'failed'; reason = 'no checked answer' }
+        else { skipped[executor] = 'not_installed'; reason = 'not installed' }
+      } else if (!repo || (tools && !tools.includes(row.tool!))) {
+        skipped[executor] = repo ? 'not_installed' : 'ineligible'
+        reason = repo ? 'not installed' : 'not eligible'
+      } else if (recentFailures(outcomes ??= await jobOutcomes($, now), executor, repo, (await clockNow($)) ?? now)) {
+        skipped[executor] = 'recent_failures'
+      } else {
+        const run = await queuedAttempt($, row.id, foreground, () => runSandboxExecutor($, e, repo, row.tool!, executor))
+        if (run.record) event.jobs.push(run.record)
+        if (run.record && run.state) await logOutcomes($, [{ record: run.record, state: run.state }])
+        if (!run.result) skipped[executor] = run.state || run.refused ? 'failed' : 'not_installed'
+        reason = run.reason
+        cancelled = run.state?.end === 'cancelled'
+        result = run.result
+        unconfirmed = Boolean(result) && run.unconfirmed === true
+        unaccepted = Boolean(result) && !run.accepted && !unconfirmed
+      }
+      if (result) {
+        // `chosen` names the executor that received the task; a dispatched sandbox job without a verified PR keeps its
+        // executor as `chosen`, with that reason. `stopped` means no executor is known to have received it, as when the
+        // dispatch failed before the dispatcher named a job.
+        const unverified = (result as { result?: { agentId?: string } }).result?.agentId === 'ai-delegation-policy'
+        // A dispatch call that threw or timed out may have submitted the job: it is neither a refusal nor a stop.
+        if (unconfirmed) await logRoute($, event, executor, 'dispatch-unconfirmed')
+        else if (unaccepted) await logRoute($, event, 'stopped', `${executor} dispatch failed before the job was accepted`)
+        else await logRoute($, event, executor, cancelled ? 'sandbox job cancelled' : unverified ? 'sandbox job without a verified PR' : 'highest-ranked eligible executor that answered')
+        return withFallThrough(result, event)
+      }
+      event.reasons[executor] = reason ?? 'failed'
+      if (!event.fell_through_from.includes(executor)) event.fell_through_from.push(executor)
     }
-    if (result) {
-      // `chosen` names the executor that received the task; a dispatched sandbox job without a verified PR keeps its
-      // executor as `chosen`, with that reason. `stopped` means no executor is known to have received it, as when the
-      // dispatch failed before the dispatcher named a job.
-      const unverified = (result as { result?: { agentId?: string } }).result?.agentId === 'ai-delegation-policy'
-      // A dispatch call that threw or timed out may have submitted the job: it is neither a refusal nor a stop.
-      if (unconfirmed) await logRoute($, event, executor, 'dispatch-unconfirmed')
-      else if (unaccepted) await logRoute($, event, 'stopped', `${executor} dispatch failed before the job was accepted`)
-      else await logRoute($, event, executor, cancelled ? 'sandbox job cancelled' : unverified ? 'sandbox job without a verified PR' : 'highest-ranked eligible executor that answered')
-      return withFallThrough(result, event)
-    }
-    event.reasons[executor] = reason ?? 'failed'
-    event.fell_through_from.push(executor)
+    return undefined
   }
+  const answer = await runRows()
+  // Detached background only: when no row answered and at least one sat out for recent failures, wait once until the
+  // earliest such row's cooldown end (never past the wait bound) and run the rows once more. A foreground call is
+  // already blocked on its answer and never waits out a cooldown. The wait holds no child and no executor row.
+  if (answer === undefined && !foreground) {
+    const cooling = await earliestCooldownEnd($, event, repo, outcomes)
+    const waitStart = cooling === undefined ? null : await clockNow($)
+    const waitMs = cooling !== undefined && waitStart !== null ? cooling.end - waitStart : 0
+    if (cooling !== undefined && waitMs > 0 && waitMs <= BACKGROUND_WAIT_MAX_MS) {
+      await logWaiting($, cooling.executor, cooling.end)
+      await new Promise<void>((resolve) => { $.clock.after(waitMs, resolve) })
+      const retried = await runRows()
+      if (retried !== undefined) return retried
+    }
+  }
+  if (answer !== undefined) return answer
   // No executor took the task and no Claude rung remains: refuse instead of handing the spawn to the session.
   if (needsMcp) return refuse($, e, event, MCP_NO_EXECUTOR, MCP_NO_EXECUTOR)
   return refuse($, e, event, NO_EXECUTOR, NO_EXECUTOR_REASON)

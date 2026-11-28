@@ -64,7 +64,8 @@ decision to `~/.claude/ai-delegation.log`:
    A recognized explicit class tag other than `text` is never classified and never takes this rung.
    Put all of the task's text in the prompt; the local model has no tools. The token estimate (characters / 3.5 plus 2048 output) must fit in
    60% of the alias's context window from the router's `/model/info`. An empty
-   answer, a length cut-off, an error or a timeout falls through.
+   answer, a length cut-off, an error, a timeout or an answer made of raw
+   chat-template or tool-call markup falls through.
 3. Subscriptions. Quota comes from one instant query to the metrics store at
    `AGENT_QUOTA_QUERY_URL` for the `agent_quota_used_percent`,
    `agent_quota_window_seconds` and `agent_quota_reset_timestamp_seconds`
@@ -123,7 +124,11 @@ decision to `~/.claude/ai-delegation.log`:
    child worked in, so the lead checks partial work before re-sending the job.
    When an eligible executor was skipped for `recent_failures`, the refusal
    ends with `Retry after <time>.` (the earliest such executor's cooldown
-   end, ISO 8601 UTC) and the route line carries `retry_after_ms`.
+   end, ISO 8601 UTC) and the route line carries `retry_after_ms`. A detached
+   background route that still has no answer waits once for the earliest such
+   row's cooldown end, at most 45 minutes, writes one `waiting` log line
+   naming the row and the end time, and runs this order once more; a
+   foreground call never waits out a cooldown.
    Every routed result carries a `[fell through: <executor>: <reason>; ...]`
    line directly above its footer when earlier executors were tried, and the
    route line carries the same `reasons` map keyed by executor. Only
