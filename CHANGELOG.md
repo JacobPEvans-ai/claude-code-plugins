@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.85.2](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.85.1...v6.85.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **ai-delegation:** skills leave executor placement to the delegation hook ([#942](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/942)) ([3c87169](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/3c87169ae0d476872caa04c32398a7c4bb58ce79))
+
 ## [6.85.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.85.0...v6.85.1) (2026-11-28)
 
 
