@@ -122,7 +122,7 @@ decision to `~/.claude/ai-delegation.log`:
    the uncommitted paths `git status --porcelain` found in the directory the
    child worked in, so the lead checks partial work before re-sending the job.
    When an eligible executor was skipped for `recent_failures`, the refusal
-   ends with `Retry&#32;after <time>.` (the earliest such executor's cooldown
+   ends with `Retry after <time>.` (the earliest such executor's cooldown
    end, ISO 8601 UTC) and the route line carries `retry_after_ms`.
    Every routed result carries a `[fell through: <executor>: <reason>; ...]`
    line directly above its footer when earlier executors were tried, and the
