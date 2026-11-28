@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.17.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/github-workflows-v6.17.0...github-workflows-v6.17.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **promote-release:** wait for the batched release merge or hand-merge it ([#964](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/964)) ([0f277d0](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/0f277d08be32ad456e2a6a7d39a060ff88dbe4ac))
+
 ## [6.17.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/github-workflows-v6.16.2...github-workflows-v6.17.0) (2026-11-28)
 
 
