@@ -6,6 +6,13 @@ import type { AgentDefinition } from './lib/agent-definition'
 
 type Engine = EngineInterface
 type AgentCall = { description?: string; prompt: string; subagent_type?: string; model?: string; effort?: string; name?: string; isolation?: string; run_in_background?: boolean }
+// One child CLI attempt: its answer text on success, or one bounded line on why it failed.
+type ChildAttempt = { text?: string; reason?: string }
+// One executor attempt: the routed result on success, or the reason its rung fell through.
+type Attempt = { result?: unknown; reason?: string }
+// A fall-through reason is one bounded line; only an uncommitted-files suffix may exceed that bound.
+const REASON_MAX_CHARS = 160
+const UNCOMMITTED_MAX_CHARS = 600
 const TEXT_EXECUTOR_TIMEOUT_MS = 120_000
 const KIND_TIMEOUT_MS = 20_000
 const KIND_OUTPUT_TOKENS = 16
@@ -41,9 +48,35 @@ async function childPath($: Engine): Promise<string> {
 
 // Why a child CLI failed, for the decision log: the first non-empty stderr line with token-like runs redacted. One
 // short suffix, or nothing.
-function childDetail(stderr: string): string {
+function childFirstLine(stderr: string): string {
   const line = stderr.split('\n').find((l) => l.trim())
-  return line ? ` (${errText(line.replace(/[A-Za-z0-9_+=-]{24,}/g, '[redacted]'))})` : ''
+  return line ? errText(line.replace(/[A-Za-z0-9_+=-]{24,}/g, '[redacted]')) : ''
+}
+function childDetail(stderr: string): string {
+  const line = childFirstLine(stderr)
+  return line ? ` (${line})` : ''
+}
+// One bounded line on why an executor fell through.
+const boundedReason = (reason: string): string => errText(reason).slice(0, REASON_MAX_CHARS)
+// A child cut off at its time limit, with the uncommitted files it may have left behind.
+const timeoutReason = (timeoutMs: number, suffix: string): string => `timeout after ${Math.round(timeoutMs / 60_000)} min${suffix}`
+// A failed child: the exit code with the redacted first line of its error output.
+const exitReason = (code: number, stderr: string): string => {
+  const line = childFirstLine(stderr)
+  return boundedReason(`exit ${code}${line ? `: ${line}` : ''}`)
+}
+// The uncommitted paths a timed-out child left in the directory it worked in, as one suffix for its reason, so the
+// session checks partial work before it re-sends the job. A failed or slow status read adds nothing.
+async function uncommittedSuffix($: Engine, directory: string): Promise<string> {
+  try {
+    const status = await $.process.run(['git', '-C', directory, 'status', '--porcelain'], { timeoutMs: 5_000 })
+    if (status.exitCode !== 0 || status.isStdoutTruncated === true) return ''
+    const paths = status.stdout.split('\n').filter((line) => line.trim()).map((line) => line.slice(3).trim()).filter(Boolean).slice(0, 20)
+    const suffix = ` ; uncommitted: ${paths.length ? paths.join(', ') : 'none'}`
+    return suffix.length <= UNCOMMITTED_MAX_CHARS ? suffix : `${suffix.slice(0, UNCOMMITTED_MAX_CHARS - 3)}...`
+  } catch {
+    return ''
+  }
 }
 const MODEL_INFO_TIMEOUT_MS = 10_000
 const JOB_STATUS_BUDGET_MS = 3_000
@@ -285,9 +318,10 @@ async function runChild($: Engine, argv: string[], input: string, timeoutMs: num
 }
 
 // One `codex exec`; its final message is read from a temporary output file.
-async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: string, timeoutMs: number, cwd?: string): Promise<string | undefined> {
+async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: string, timeoutMs: number, cwd?: string): Promise<ChildAttempt> {
   let outputFile: string | undefined
   let failure: string | undefined
+  let reason: string | undefined
   let end: AttemptEnd = 'failed'
   try {
     const temporary = await $.process.run(['mktemp'], { timeoutMs: 5_000 })
@@ -304,14 +338,18 @@ async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: 
       const r = await runChild($, argv, prompt, timeoutMs, { PATH: await childPath($) })
       if (r.exitCode !== 0) {
         failure = `codex exec exited with code ${r.exitCode}${childDetail(r.stderr)}`
+        reason = exitReason(r.exitCode, r.stderr)
       } else {
         const text = ((await $.fs.read(outputFile)) as string).trim()
-        if (text) { end = 'ok'; return text }
+        if (text) { end = 'ok'; return { text } }
         failure = 'codex exec returned an empty final message'
       }
     }
   } catch (err) {
-    if (isTimeout(err)) end = 'timeout'
+    if (isTimeout(err)) {
+      end = 'timeout'
+      reason = timeoutReason(timeoutMs, await uncommittedSuffix($, cwd ?? (await $.session.cwd())))
+    }
     failure = `codex exec invocation or output read failed: ${errText(err)}`
   } finally {
     if (outputFile) {
@@ -323,17 +361,18 @@ async function runCodex($: Engine, codexRoute: Route, sandbox: Sandbox, prompt: 
     }
     await logExecutorOutcome($, 'codex', end)
   }
-  const reason = failure ?? 'unknown failure'
-  $.ui.log(`ai-delegation: Codex failed: ${reason}`)
-  await logDecision($, `codex failure: ${reason}`)
-  return undefined
+  const why = failure ?? 'unknown failure'
+  $.ui.log(`ai-delegation: Codex failed: ${why}`)
+  await logDecision($, `codex failure: ${why}`)
+  return { reason: reason ?? boundedReason(why) }
 }
 
 // One headless CLI child on the on-host router, under the row's role alias. The model guard runs before any spawn;
 // the JSON result must identify a successful non-Claude model before its text can reach the parent session.
-async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt: string, timeoutMs: number, cwd?: string, mcp?: HarnessMcpConfig): Promise<string | undefined> {
+async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt: string, timeoutMs: number, cwd?: string, mcp?: HarnessMcpConfig): Promise<ChildAttempt> {
   if (forbiddenHarnessModel(row.model)) throw new Error('harness row names a forbidden Claude model')
   let failure: string | undefined
+  let reason: string | undefined
   let end: AttemptEnd = 'failed'
   try {
     const base = await $.env.get('LITELLM_LOCAL_BASE_URL')
@@ -343,6 +382,7 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
     const result = await runChild($, childArgv, prompt, timeoutMs, env)
     if (result.exitCode !== 0) {
       failure = `harness exited with code ${result.exitCode}${childDetail(result.stderr)}`
+      reason = exitReason(result.exitCode, result.stderr)
       // A turn-limit stop says the task was too big, not that the executor failed; it must not trip the cooldown.
       try {
         if ((JSON.parse(result.stdout) as { subtype?: unknown })?.subtype === 'error_max_turns') end = 'task_failed'
@@ -353,7 +393,7 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
       const checked = checkHarnessResult(JSON.parse(result.stdout), row.model!)
       if (checked.ok) {
         end = 'ok'
-        return checked.text
+        return { text: checked.text }
       }
       failure = checked.reason
       if (checked.violation) {
@@ -362,14 +402,18 @@ async function runHarness($: Engine, row: ExecutorRow, sandbox: Sandbox, prompt:
       }
     }
   } catch (error) {
-    if (isTimeout(error)) end = 'timeout'
+    if (isTimeout(error)) {
+      end = 'timeout'
+      reason = timeoutReason(timeoutMs, await uncommittedSuffix($, cwd ?? (await $.session.cwd())))
+    }
     failure = `harness invocation failed: ${errText(error)}`
   } finally {
     await logExecutorOutcome($, row.id, end)
   }
-  $.ui.log(`ai-delegation: harness failed: ${failure ?? 'unknown failure'}`)
-  await logDecision($, `harness failure: ${failure ?? 'unknown failure'}`)
-  return undefined
+  const why = failure ?? 'unknown failure'
+  $.ui.log(`ai-delegation: harness failed: ${why}`)
+  await logDecision($, `harness failure: ${why}`)
+  return { reason: reason ?? boundedReason(why) }
 }
 
 // Attempt outcomes use only the row id, result class and hook clock; prompt and answer text stay out of the log.
@@ -475,43 +519,43 @@ async function classify($: Engine, e: AgentCall): Promise<Label> {
   }
 }
 
-async function runRoutedCodex($: Engine, e: AgentCall, route: string, codexRoute: Route, sandbox: Sandbox, detail: string): Promise<unknown | undefined> {
+async function runRoutedCodex($: Engine, e: AgentCall, route: string, codexRoute: Route, sandbox: Sandbox, detail: string): Promise<Attempt> {
   const started = await clockNow($)
   let cwd: string | undefined
   if (e.isolation) {
-    if (e.isolation !== 'worktree') return undefined
+    if (e.isolation !== 'worktree') return { reason: 'unsupported isolation' }
     const temporary = await $.process.run(['mktemp', '-d'], { timeoutMs: 5_000 })
     cwd = temporary.stdout.trim()
-    if (temporary.exitCode !== 0 || !cwd.startsWith('/')) return undefined
+    if (temporary.exitCode !== 0 || !cwd.startsWith('/')) return { reason: 'temporary worktree directory was not created' }
     const worktree = await $.process.run(['git', '-C', await $.session.cwd(), 'worktree', 'add', '--detach', cwd, 'HEAD'], { timeoutMs: 30_000 })
-    if (worktree.exitCode !== 0) return undefined
+    if (worktree.exitCode !== 0) return { reason: 'temporary worktree was not created' }
     detail += `, worktree ${cwd}`
   }
-  const out = await runCodex($, codexRoute, sandbox, e.prompt, ROUTED_CHILD_TIMEOUT_MS, cwd)
-  if (!out) return undefined
+  const child = await runCodex($, codexRoute, sandbox, e.prompt, ROUTED_CHILD_TIMEOUT_MS, cwd)
+  if (!child.text) return { reason: child.reason ?? 'unknown failure' }
   await logDecision($, `route: ${route} -> codex ${codexRoute.family} ${codexRoute.effort} (${sandbox})`)
-  return routedResult(e, 'ai-delegation-codex', out, `[routed: codex ${codexRoute.family} ${codexRoute.effort}, ${detail}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started)
+  return { result: routedResult(e, 'ai-delegation-codex', child.text, `[routed: codex ${codexRoute.family} ${codexRoute.effort}, ${detail}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started) }
 }
 
-async function runRoutedHarness($: Engine, e: AgentCall, row: ExecutorRow, sandbox: Sandbox, mcp?: HarnessMcpConfig): Promise<unknown | undefined> {
+async function runRoutedHarness($: Engine, e: AgentCall, row: ExecutorRow, sandbox: Sandbox, mcp?: HarnessMcpConfig): Promise<Attempt> {
   const started = await clockNow($)
   let cwd: string | undefined
   if (e.isolation) {
-    if (e.isolation !== 'worktree') return undefined
+    if (e.isolation !== 'worktree') return { reason: 'unsupported isolation' }
     const temporary = await $.process.run(['mktemp', '-d'], { timeoutMs: 5_000 })
     cwd = temporary.stdout.trim()
-    if (temporary.exitCode !== 0 || !cwd.startsWith('/')) return undefined
+    if (temporary.exitCode !== 0 || !cwd.startsWith('/')) return { reason: 'temporary worktree directory was not created' }
     const worktree = await $.process.run(['git', '-C', await $.session.cwd(), 'worktree', 'add', '--detach', cwd, 'HEAD'], { timeoutMs: 30_000 })
-    if (worktree.exitCode !== 0) return undefined
+    if (worktree.exitCode !== 0) return { reason: 'temporary worktree was not created' }
   }
-  const out = await runHarness($, row, sandbox, e.prompt, ROUTED_CHILD_TIMEOUT_MS, cwd, mcp)
-  if (!out) return undefined
+  const child = await runHarness($, row, sandbox, e.prompt, ROUTED_CHILD_TIMEOUT_MS, cwd, mcp)
+  if (!child.text) return { reason: child.reason ?? 'unknown failure' }
   await logDecision($, `route: ${row.id} -> harness ${row.model} (${sandbox})`)
-  return routedResult(e, 'ai-delegation-harness', out, `[routed: harness ${row.model}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started)
+  return { result: routedResult(e, 'ai-delegation-harness', child.text, `[routed: harness ${row.model}]`, started === null ? 0 : ((await clockNow($)) ?? started) - started) }
 }
 
 // The harness rung uses the same sandbox decision as Codex and adds the mandatory bulk-complex tag before dispatch.
-async function runHarnessRung($: Engine, e: AgentCall, row: ExecutorRow, customSandbox: Sandbox | undefined, rungLabel: () => Promise<Label>, mcp?: HarnessMcpConfig): Promise<unknown | undefined> {
+async function runHarnessRung($: Engine, e: AgentCall, row: ExecutorRow, customSandbox: Sandbox | undefined, rungLabel: () => Promise<Label>, mcp?: HarnessMcpConfig): Promise<Attempt> {
   const label = await rungLabel()
   const sandbox = routedSandbox(e, label, customSandbox)
   if (mandatoryLabel(`${e.description ?? ''}\n${e.prompt}`)) e = { ...e, description: `${e.description ?? ''} [class: bulk-complex]` }
@@ -525,9 +569,10 @@ function routedSandbox(e: AgentCall, label: Label, customSandbox: Sandbox | unde
   return advisory || e.subagent_type === 'Explore' || e.subagent_type === 'Plan' || customSandbox === 'read-only' || reviewOnly(`${e.description ?? ''}\n${e.prompt}`) ? 'read-only' : 'workspace-write'
 }
 
-// The Codex rung: classify, pick the sandbox, run. Undefined on any failure so routing continues. The label comes from
-// the shared per-spawn classifier, so a rung that runs after another asks no second classification.
-async function runCodexRung($: Engine, e: AgentCall, customSandbox: Sandbox | undefined, rungLabel: () => Promise<Label>): Promise<unknown | undefined> {
+// The Codex rung: classify, pick the sandbox, run. No result on any failure so routing continues, with the reason
+// recorded. The label comes from the shared per-spawn classifier, so a rung that runs after another asks no second
+// classification.
+async function runCodexRung($: Engine, e: AgentCall, customSandbox: Sandbox | undefined, rungLabel: () => Promise<Label>): Promise<Attempt> {
   const label = await rungLabel()
   const sandbox = routedSandbox(e, label, customSandbox)
   if (mandatoryLabel(`${e.description ?? ''}\n${e.prompt}`)) e = { ...e, description: `${e.description ?? ''} [class: bulk-complex]` }
@@ -563,9 +608,18 @@ const NETWORK_NO_EXECUTOR_REASON = 'network work: no harness executor answered'
 const MCP_NO_EXECUTOR = 'agent needs its MCP servers; no harness executor answered'
 const CLAUDE_SUBAGENT_DENY = 'Claude subagents are disabled by operator order; delegate through a non-Claude executor'
 
+// A ladder with no answer is refused, never handed to the session. When an executor was cut off at its time limit,
+// the refusal names it and its partial work instead of "nothing ran", so the lead checks that work before re-sending
+// the job; the note above the footer names every executor that was tried, with its reason. The route line's reason
+// keeps its existing values.
 async function refuse($: Engine, e: AgentCall, event: RouteEvent, text: string, reason: string): Promise<unknown> {
+  const timedOut = event.fell_through_from.filter((id) => event.reasons[id]?.startsWith('timeout after '))
+  const said = text === NO_EXECUTOR && timedOut.length
+    ? `no non-Claude executor answered; ${timedOut.join(', ')} timed out and may have left partial work`
+    : text
+  const note = fellThroughLine(event)
   await logRoute($, event, 'stopped', reason)
-  return failure(e, text)
+  return routedResult(e, 'ai-delegation-policy', note ? `FAIL | router | ${said}\n\n${note}` : `FAIL | router | ${said}`, '[routing stopped]', 0)
 }
 
 function repositoryTag(description: string | undefined, prompt?: string): string | undefined {
@@ -707,13 +761,14 @@ async function jobStatus($: Engine, job: string, timeoutMs: number): Promise<Job
   }
 }
 
-// One decision-log write for every outcome found at this placement.
-async function logOutcomes($: Engine, ended: { record: JobRecord; state: JobState }[]): Promise<JobOutcome[]> {
+// One decision-log write for every outcome found at this placement. A job that ended without its PR records the same
+// `job <end state>` reason its executor's fall-through carries.
+async function logOutcomes($: Engine, ended: { record: JobRecord; state: JobState }[]): Promise<(JobOutcome & { reason?: string })[]> {
   if (!ended.length) return []
   const ts_ms = await clockNow($)
   if (ts_ms === null) return []
-  const outcomes = ended.map(({ record, state }) => ({ job: record.job, repo: record.repo, executor: record.executor, end: state.end, ts_ms, ended_ms: endAnchor(record, state, ts_ms) }))
-  await logDecision($, outcomes.map((o) => JSON.stringify({ ts_ms, event: 'outcome', job: o.job, repo: o.repo, executor: o.executor, end: o.end, ended_ms: o.ended_ms })).join('\n'))
+  const outcomes = ended.map(({ record, state }) => ({ job: record.job, repo: record.repo, executor: record.executor, end: state.end, ts_ms, ended_ms: endAnchor(record, state, ts_ms), ...(state.end === 'pr_opened' ? {} : { reason: `job ${state.end}` }) }))
+  await logDecision($, outcomes.map((o) => JSON.stringify({ ts_ms, event: 'outcome', job: o.job, repo: o.repo, executor: o.executor, end: o.end, ended_ms: o.ended_ms, ...(o.reason === undefined ? {} : { reason: o.reason }) })).join('\n'))
   return outcomes
 }
 
@@ -743,15 +798,16 @@ async function jobOutcomes($: Engine, nowMs: number): Promise<JobOutcome[]> {
 // is true once the dispatcher's answer names a job, so a FAIL without it means receipt is unverified.
 // `unconfirmed` is true when the dispatch call threw or timed out, so whether the job was submitted is unknown.
 // `refused` is true when the dispatcher answered in full and named no job: nothing was submitted, so the next rung runs.
-type SandboxRun = { result?: unknown; record?: JobRecord; state?: JobState; accepted: boolean; unconfirmed?: boolean; refused?: boolean }
+// `reason` is the one line the routing loop records when the rung falls through.
+type SandboxRun = { result?: unknown; record?: JobRecord; state?: JobState; accepted: boolean; unconfirmed?: boolean; refused?: boolean; reason?: string }
 // A result with a `cancelled` state stops routing. Other ended states without a PR let the task move to the next executor.
 async function runSandboxExecutor($: Engine, e: AgentCall, repo: string, tool: string, executor: string): Promise<SandboxRun> {
   const started = await clockNow($)
   try {
     const available = await $.process.run(['which', 'zcode-job'], { timeoutMs: 5_000 })
-    if (available.exitCode !== 0) return { accepted: false }
+    if (available.exitCode !== 0) return { accepted: false, reason: 'not installed' }
   } catch {
-    return { accepted: false }
+    return { accepted: false, reason: 'not installed' }
   }
   const name = SANDBOX_NAMES[tool] ?? `${tool} sandbox`
   let record: JobRecord | undefined
@@ -766,7 +822,7 @@ async function runSandboxExecutor($: Engine, e: AgentCall, repo: string, tool: s
     const line = response.stdout.replace(/\r?\n$/, '')
     const job = response.isStdoutTruncated === true ? undefined : line.match(/^(?:DONE|FAIL)\|(j-[0-9a-f]{16})\|/)?.[1]
     accepted = Boolean(job)
-    if (!job && response.isStdoutTruncated !== true) return { accepted, refused: true }
+    if (!job && response.isStdoutTruncated !== true) return { accepted, refused: true, reason: boundedReason(`refused: ${line}`) }
     if (job) record = { job, repo, executor, started_ms: started ?? 0 }
     const done = line.match(/^DONE\|(j-[0-9a-f]{16})\|(https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+)\/pull\/(\d+))$/)
     const pullUrl = done?.[2]
@@ -776,7 +832,7 @@ async function runSandboxExecutor($: Engine, e: AgentCall, repo: string, tool: s
       // A job still running or with an unreadable end may yet open a PR: never start a duplicate.
       const state = record ? await jobStatus($, record.job, JOB_STATUS_TIMEOUT_MS) : undefined
       if (state?.end === 'cancelled') return { accepted, record, state, result: failure(e, `${tool} job ${record!.job} was cancelled; routing stops for this task`) }
-      if (state && state.end !== 'pr_opened') return { accepted, record, state }
+      if (state && state.end !== 'pr_opened') return { accepted, record, state, reason: boundedReason(`job ${state.end}`) }
       return { accepted, record, result: failure(e, `${tool} did not return a PR for the requested repository`) }
     }
     const pr = await github($, `${repo}/pulls/${pullNumber}`) as { state?: string; draft?: boolean; html_url?: string }
@@ -830,8 +886,27 @@ async function customAgentDefinition($: Engine, type: string): Promise<AgentDefi
 type RouteEvent = {
   agent_type: string; kind: { value: Kind; source: 'tag' | 'classifier' | 'none' }; local: { alias: string | null; est_tokens: number } | null; eligible: string[]
   scores: Record<string, { score: number | null; exhausted: boolean; effective: number | null; used: number | null; line: number | null } | null>; fell_through_from: string[]
+  reasons: Record<string, string>
   skipped: Record<string, SkipReason>; jobs: JobRecord[]
   quota_unknown: Record<string, QuotaReason>; quota_source: Record<string, string>
+}
+
+// One line naming every executor that was tried before the one that answered, each with its failure reason.
+function fellThroughLine(event: RouteEvent): string | undefined {
+  if (!event.fell_through_from.length) return undefined
+  return `[fell through: ${event.fell_through_from.map((id) => `${id}: ${event.reasons[id] ?? 'failed'}`).join('; ')}]`
+}
+
+// The fall-through note sits directly above the result's routed footer, so the footer stays the last line and the
+// session sees every executor that was tried first. A policy refusal is worded by `refuse`.
+function withFallThrough(result: unknown, event: RouteEvent): unknown {
+  const note = fellThroughLine(event)
+  const envelope = result as { result?: { agentId?: string; content?: { type?: string; text?: string }[] } }
+  const content = envelope.result?.content?.[0]
+  if (!note || envelope.result?.agentId === 'ai-delegation-policy' || content?.type !== 'text' || typeof content.text !== 'string') return result
+  const cut = content.text.lastIndexOf('\n\n')
+  content.text = cut === -1 ? `${content.text}\n${note}` : `${content.text.slice(0, cut)}\n\n${note}\n\n${content.text.slice(cut + 2)}`
+  return result
 }
 
 // One JSON telemetry line per routing decision. It never throws, so a failed write cannot change the decision.
@@ -928,7 +1003,7 @@ const agentType = (e: AgentCall, verified: boolean): string => {
   const type = e.subagent_type ?? 'general-purpose'
   return (verified || isGenericType(e)) && /^[\w:.-]{1,80}$/.test(type) && safePayload(type) ? type : 'unrecognized'
 }
-const newEvent = (e: AgentCall): RouteEvent => ({ agent_type: agentType(e, false), kind: { value: 'other', source: 'none' }, local: null, eligible: [], scores: {}, fell_through_from: [], skipped: {}, jobs: [], quota_unknown: {}, quota_source: {} })
+const newEvent = (e: AgentCall): RouteEvent => ({ agent_type: agentType(e, false), kind: { value: 'other', source: 'none' }, local: null, eligible: [], scores: {}, fell_through_from: [], reasons: {}, skipped: {}, jobs: [], quota_unknown: {}, quota_source: {} })
 
 // Every exit that stops routing writes its route line too.
 async function stopRoute($: Engine, e: AgentCall, event: RouteEvent, reason: string): Promise<unknown> {
@@ -1062,6 +1137,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
         await logRoute($, event, `local ${local.alias}`, 'checked local answer')
         return routedResult(e, 'ai-delegation-local', out, `[routed: local ${local.alias}]`, 0)
       }
+      event.reasons[`local ${local.alias}`] = 'no checked answer'
       event.fell_through_from.push(`local ${local.alias}`)
     }
   }
@@ -1125,6 +1201,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
       }
     }
     let result: unknown | undefined
+    let reason: string | undefined
     let cancelled = false
     let unaccepted = false
     let unconfirmed = false
@@ -1132,18 +1209,23 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
       if (!base) { skipped[executor] = 'not_installed'; continue }
       if (harnessDown) { skipped[executor] = 'failed'; continue }
       const startedAt = await clockNow($)
-      result = await runHarnessRung($, e, row, customSandbox, rungLabel, mcp)
+      const attempt = await runHarnessRung($, e, row, customSandbox, rungLabel, mcp)
+      result = attempt.result
+      reason = attempt.reason
       if (!result) {
         skipped[executor] = harnessViolations.has(executor) ? 'violation' : 'failed'
         const ended = await clockNow($)
         if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
       }
     } else if (row.transport === 'codex') {
-      result = await runCodexRung($, e, customSandbox, rungLabel)
+      const attempt = await runCodexRung($, e, customSandbox, rungLabel)
+      result = attempt.result
+      reason = attempt.reason
       if (!result) skipped[executor] = 'failed'
     } else if (row.transport === 'router-chat' && event.fell_through_from.includes(`local ${row.model}`)) {
       // The local rung already sent this prompt to this alias and it failed its check.
       skipped[executor] = 'failed'
+      reason = 'no checked answer'
     } else if (row.transport === 'router-chat') {
       // The local rung's chat call and size gate, under the row's router model; never code or tool work. A prompt whose
       // estimate exceeds 60% of the model's window, or a model with no known window, is skipped.
@@ -1153,10 +1235,14 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
         $.ui.log('ai-delegation: router-chat failed: answer contains chat-template syntax')
         await logDecision($, 'router-chat failure: answer contains chat-template syntax')
         skipped[executor] = 'failed'
+        reason = 'answer contains chat-template syntax'
       } else if (out) result = routedResult(e, 'ai-delegation-router-chat', out, `[routed: router-chat ${row.model}]`, 0)
-      else skipped[executor] = !textOnly || (base && !fits) ? 'ineligible' : base ? 'failed' : 'not_installed'
+      else if (!textOnly || (base && !fits)) { skipped[executor] = 'ineligible'; reason = 'not eligible' }
+      else if (base) { skipped[executor] = 'failed'; reason = 'no checked answer' }
+      else { skipped[executor] = 'not_installed'; reason = 'not installed' }
     } else if (!repo || (tools && !tools.includes(row.tool!))) {
       skipped[executor] = repo ? 'not_installed' : 'ineligible'
+      reason = repo ? 'not installed' : 'not eligible'
     } else if (recentFailures(outcomes ??= await jobOutcomes($, now), executor, repo, now)) {
       skipped[executor] = 'recent_failures'
     } else {
@@ -1164,6 +1250,7 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
       if (run.record) event.jobs.push(run.record)
       if (run.record && run.state) await logOutcomes($, [{ record: run.record, state: run.state }])
       if (!run.result) skipped[executor] = run.state || run.refused ? 'failed' : 'not_installed'
+      reason = run.reason
       cancelled = run.state?.end === 'cancelled'
       result = run.result
       unconfirmed = Boolean(result) && run.unconfirmed === true
@@ -1178,8 +1265,9 @@ async function route($: Engine, e: AgentCall): Promise<unknown> {
       if (unconfirmed) await logRoute($, event, executor, 'dispatch-unconfirmed')
       else if (unaccepted) await logRoute($, event, 'stopped', `${executor} dispatch failed before the job was accepted`)
       else await logRoute($, event, executor, cancelled ? 'sandbox job cancelled' : unverified ? 'sandbox job without a verified PR' : 'highest-ranked eligible executor that answered')
-      return result
+      return withFallThrough(result, event)
     }
+    event.reasons[executor] = reason ?? 'failed'
     event.fell_through_from.push(executor)
   }
   // No executor took the task and no Claude rung remains: refuse instead of handing the spawn to the session.
@@ -1212,14 +1300,15 @@ async function routeNetwork($: Engine, e: AgentCall, event: RouteEvent, customSa
       continue
     }
     const startedAt = await clockNow($)
-    const result = await runHarnessRung($, e, row, customSandbox, rungLabel, mcp)
-    if (result) {
+    const attempt = await runHarnessRung($, e, row, customSandbox, rungLabel, mcp)
+    if (attempt.result) {
       await logRoute($, event, row.id, 'network work')
-      return result
+      return withFallThrough(attempt.result, event)
     }
     skipped[row.id] = harnessViolations.has(row.id) ? 'violation' : 'failed'
     const ended = await clockNow($)
     if (startedAt !== null && ended !== null && ended - startedAt >= HARNESS_FALLBACK_MS) harnessDown = true
+    event.reasons[row.id] = attempt.reason ?? 'failed'
     event.fell_through_from.push(row.id)
   }
   return refuse($, e, event, NETWORK_NO_EXECUTOR, NETWORK_NO_EXECUTOR_REASON)

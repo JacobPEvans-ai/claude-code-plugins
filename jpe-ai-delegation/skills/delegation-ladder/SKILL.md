@@ -109,7 +109,15 @@ decision to `~/.claude/ai-delegation.log`:
    `budget_spent`.
 4. An executor failure, an empty answer or an unknown quota moves to the next
    executor; when no executor answers, the spawn is refused with `no non-Claude
-   executor answered; nothing ran` and the route line records `stopped`. Only
+   executor answered; nothing ran` and the route line records `stopped`. When
+   an executor was cut off at its time limit, the refusal names it instead:
+   `no non-Claude executor answered; <executor> timed out and may have left
+   partial work` (one per timed-out executor, comma separated), together with
+   the uncommitted paths `git status --porcelain` found in the directory the
+   child worked in, so the lead checks partial work before re-sending the job.
+   Every routed result carries a `[fell through: <executor>: <reason>; ...]`
+   line directly above its footer when earlier executors were tried, and the
+   route line carries the same `reasons` map keyed by executor. Only
    forbidden models, retired agent types, prohibited payloads and a sandbox
    job that may still open a PR stop routing earlier.
 
@@ -120,7 +128,8 @@ Codex. The hook verifies the returned PR belongs to the requested
 repository and is open and non-draft. When a job returns
 no verified PR, the hook reads `zcode-job status <job>` and acts on its `end`
 field. If the job ended without a PR, the task moves to the next eligible
-executor; `fell_through_from` names the sandbox and `skipped` gives `failed`.
+executor; `fell_through_from` names the sandbox with its reason in `reasons`
+and `skipped` gives `failed`.
 A dispatcher that answers in full but names no job submitted nothing, so the
 task moves on the same way. A truncated answer may hide a job, so it stops.
 Every route line carries `hook_version`, the loaded plugin's version.
@@ -135,7 +144,8 @@ When a later placement has a sandbox executor as a candidate, the hook reads the
 last 128 KiB of the decision log; a truncated read counts as no history. It
 reads `status` for up to five recent jobs that have no outcome yet, within 3
 seconds in total, and writes one `outcome` line (`job`, `repo`, `executor`,
-`end`, `ended_ms`) for each job that has ended. `ended_ms` is the start plus the
+`end`, `ended_ms`, and a `reason` of `job <end state>` when the job ended
+without its PR) for each job that has ended. `ended_ms` is the start plus the
 job's `duration`, never later than the observation; without a duration it is
 the observation time. The hook keeps no store of its own; it reads these lines
 back from the decision log, counts one outcome per job, and ignores lines
