@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.37.2](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.37.1...jpe-ai-delegation-v1.37.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **ai-delegation:** skills leave executor placement to the delegation hook ([#942](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/942)) ([3c87169](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/3c87169ae0d476872caa04c32398a7c4bb58ce79))
+
+## [1.37.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.37.0...jpe-ai-delegation-v1.37.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** deliver a background result into the running turn ([#940](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/940)) ([f1394c4](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/f1394c46922cf6af1f01c4ee637aa2e7a26b4d1f))
+
 ## [1.37.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.36.1...jpe-ai-delegation-v1.37.0) (2026-11-27)
 
 

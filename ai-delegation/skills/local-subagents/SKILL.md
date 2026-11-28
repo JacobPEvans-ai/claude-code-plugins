@@ -1,6 +1,6 @@
 ---
 name: local-subagents
-description: Use for bulk reading, summarizing, classifying, extracting, drafting boilerplate, or a first pass over code — hand it to a local/cheap model via the router, not your context. Covers delegation timing, the model menu, bounding calls, refusals.
+description: Use for bulk reading, summarizing, classifying, extracting, drafting boilerplate, or a first pass over code — self-contained text work tagged and sent out. Covers delegation timing, the live model menu, bounding calls, refusals.
 license: MIT
 metadata:
   version: 1.0.0
@@ -20,13 +20,11 @@ metadata:
 
 # local-subagents
 
-Doctrine: the project's delegation guidance. This skill is how
-you act on it — when to hand work out, how to find out what is serving right
-now, and how to place the call.
-
-Your own inference is the scarcest and most expensive thing in the session.
-Local models may cost nothing per token and sit idle; use them when they can
-do the work.
+Shared doctrine: `prompt://dryvist/auto-ai-agent/model-delegation`. The
+delegation hook places every spawn; a session tags the work and never picks
+an executor, tier or model by name. This skill covers the mechanics around
+that rule: when work qualifies for delegation, how to bound a call, and how
+to read a refusal.
 
 ## 1. When to delegate — the default is yes
 
@@ -40,36 +38,36 @@ Delegate a step when its result can be **checked from concrete evidence**:
 | A first pass over unfamiliar code ("where is X handled") | Resolving contradictory evidence |
 | Drafting boilerplate text from a stated pattern | Reviewing anything risky |
 | Reading and reducing command or test output | The final answer to the user |
-| | Code edits — the router never writes code; implementation chunks go to Codex or a scoped worker subagent |
+| | Code edits — the router never writes code; tag them `[task: code] [repo: owner/repository]` |
 
 Two rules that keep this honest:
 
 - **Split the job; never escalate the whole job.** One hard step inside a task
   does not make the task premium work. Delegate the other eight steps.
-- **Capable judges the subtask, not the parent task.** A 9B model summarizing
+- **Capable judges the subtask, not the parent task.** A minimal model summarizing
   a log is the right tool even inside a hard architectural task.
-- **Router tiers earn re-checkable lookups and bulk reads, not code edits.**
-  Delegate to a router tier only when the result can be verified against
-  concrete evidence (a grep hit, a test pass, a schema match). Route code edits
-  to Codex or a scoped worker subagent. A misread search or a silently wrong edit from a
-  cheap tier costs more than doing it yourself.
+- **Router entries earn re-checkable lookups and bulk reads, not code edits.**
+  Delegate to a router entry only when the result can be verified against
+  concrete evidence (a grep hit, a test pass, a schema match). Code edits are
+  `[task: code] [repo: owner/repository]` work. A misread search or a
+  silently wrong edit costs more than it saves.
 
-## 1b. Cheap first, escalate on checked failure
+## 1b. Verify, then re-send only the failures
 
 When a delegated batch has a verification command (a test, a lint, a diff
-against expected output), run the cheapest capable tier first and re-run
-only the failures at the next tier up:
+against expected output), run the verification per item and re-send only
+what failed:
 
-1. Send the whole batch to the cheapest tier.
+1. Send the whole batch as one tagged packet.
 2. Run the verification command per item.
-3. Re-run only the failing items one tier up. Never re-run items that
+3. Re-send only the failing items. Never re-send items that
    already passed.
-4. Stop after one escalation step — an item still failing goes to you, not a
-   third tier.
+4. A refused or failed executor falls to the next eligible one. An item
+   still failing is split or recorded as a tracked task, not absorbed
+   silently.
 
-This holds pass rate at roughly half the cost of running everything at the
-higher tier. It only works with a verification command; without one, send
-the work to whichever tier can judge it correctly the first time.
+It only works with a verification command; without one, say the result is
+unverified.
 
 **Never delegated, at any tier:** secrets and credentials, secret-store
 context, private infrastructure topology (hosts, addresses, what depends on
@@ -89,9 +87,10 @@ env | grep -iE 'router|litellm|openai_(base|api)' | sed 's/=.*/=<set>/'
 A credential may arrive as a **file path** rather than a value; read the file
 at the moment of the call and keep it in a variable, never export it.
 
-No endpoint variable means the router is not wired into this session. Say so
-and do the work yourself. Do not go looking for a provider key — you hold
-none, and acquiring one replaces a central budget with an unmetered one.
+No endpoint variable means the router is not wired into this session. Say so;
+the hook's fall-through places the work with the next eligible executor. Do
+not go looking for a provider key — you hold none, and acquiring one
+replaces a central budget with an unmetered one.
 
 ## 3. Fetch the live menu — never hardcode a model name
 
@@ -102,7 +101,7 @@ curl -fsS --max-time 10 -H "Authorization: Bearer $ROUTER_KEY" \
   "$ROUTER_BASE/model/info" > menu.json
 ```
 
-Render the menu you will choose from. Entries may publish a `hints` map
+Render the menu before a call. Entries may publish a `hints` map
 (`speed`, `quality`, `best_for`, `caveats`, `measured`) — the registry's own
 description of each model, which is why this skill needs no model names:
 
@@ -122,26 +121,20 @@ Fallback listing when `/model/info` is unavailable: `GET /models` gives ids
 only, no hints — say so if you choose from it. More recipes:
 [references/menu.md](references/menu.md).
 
-## 4. Choose
+## 4. Read the menu, size the call
 
-1. **Prefer a capability name over a physical id.** A capability (`small`, `medium`,
-   `large`, `embed`, `ocr`) is the part promised to keep working when the model
-   behind it changes.
-2. **Match `best_for` to the subtask**, not to the parent task.
-3. **Free before paid, then fastest.** Take the cheapest entry that can
-   plausibly do this subtask; among equals prefer the higher `speed` class.
-4. **Check the context window against your input** before sending. A router
+The hook ranks the eligible executors at call time; this session never picks
+one by name. The menu still bounds the call:
+
+1. **Check the context window against your input** before sending. A router
    with pre-call checks refuses an oversized prompt outright rather than
    truncating it — that refusal is correct, and the fix is a smaller slice or
    an entry with a larger window, never a retry.
-5. **Read the caveats.** They are measured failure modes: a model that only
+2. **Read the caveats.** They are measured failure modes: a model that only
    tool-calls reliably in one stream, one that needs specific sampling, one
    whose free tier retains prompts.
-6. **Escalate one quality class at a time**, and only after a weaker tier
-   actually fell short. Say that it did.
 
-When no hints are published, fall back to cost and context alone, and say the
-choice was made without them.
+When no hints are published, say the call was sized without them.
 
 ## 5. Call, bounded
 
@@ -177,9 +170,9 @@ Rules:
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
-| DNS failure, refused connection, timeout | Router unreachable | Report it; defer the subtask or do it yourself as a stated choice |
+| DNS failure, refused connection, timeout | Router unreachable | Report it; defer the subtask, split it, or record it as a tracked task |
 | `401` / `403` | Credential invalid or not scoped to that model | Report it; do not retry with a different credential |
-| `429` | Backend busy — often a single-slot local model, or `fast-gpu`'s contention lock (§8 — `fast`/`subagent` redirect instead of returning this) | Wait once and retry, or take another entry; see `openrouter-models` for budget refusals |
+| `429` | Backend busy — often a single-slot local model, or `fast-gpu`'s contention lock (§8 — `fast`/`subagent` redirect instead of returning this) | Wait once and retry, or let placement fall to the next eligible executor; see `openrouter-models` for budget refusals |
 | `400` naming an unknown model | Your id is not served | Re-fetch the menu; do not retry the same id |
 | A context-length refusal | Pre-call check working | Send a smaller slice or pick a larger-window entry |
 
@@ -206,22 +199,20 @@ relying on it.
 
 - **`fast-gpu` surfaces contention as a `429`.** Its body names the current
   holder and a retry hint — respect it. Wait once for the hinted interval,
-  or fall back to another entry (or do the subtask yourself) as a stated
+  or let placement fall to the next eligible executor as a stated
   choice per §6. Do not loop-poll or hammer it; that only extends the wait
-  for whoever is already holding it. Reach for `fast-gpu` when you want to
-  *observe* contention and build your own fallback sequence around it.
+  for whoever is already holding it.
 - **`fast` and `subagent` never surface contention.** Rather than failing,
   they redirect through their own fallback ladder and answer from whichever
   rung was free — silently. Do not expect a `429` as a busy signal from
   either of these, and do not assume the reply came from the fastest rung:
   check whatever field the router's response publishes for what actually
-  answered (§7) before reporting it as this tier. Reach for one of these
-  when you just want an answer and do not care which rung produced it.
+  answered (§7) before reporting it as this tier.
 - **None of these are more capable than you.** Route only Delegate-column
   work here (§1) — menial, routine, checkable — no matter which of these
   roles answers.
-- **Never a silent default.** You reach any of these roles only by
-  deliberately selecting one from the menu, same as any other entry. A caller
+- **Never a silent default.** A delegated call reaches one of these roles
+  only when the hook's placement names it. A caller
   may configure one as an automatic fallback on its own side — that does not
   extend to this skill's callers.
 
@@ -231,7 +222,7 @@ relying on it.
   paid entries, the free-tier prompt-logging rule, and how to ask for a model
   the router does not serve.
 - **premium-agent-orchestration** (ai-delegation) — which decisions a premium
-  session keeps; this skill is how its delegations are placed.
+  session keeps; the delegation hook places its spawns.
 - **`/agentops:orchestrate`** — dispatch and result checks for work sent to
   another harness or CLI rather than to a model behind the router; the
   maintainer-specific executor ladder is in `jpe-ai-delegation`.

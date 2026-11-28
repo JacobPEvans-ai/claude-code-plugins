@@ -1,6 +1,6 @@
 ---
 name: openrouter-models
-description: Choose among the router's hosted models — discover current ids/prices from the public catalog, self-enforce a spend budget the router doesn't meter, respect the free-tier logging caveat, and request onboarding of a model not yet served.
+description: Covers the router's hosted models — discover current ids and prices from the public catalog, self-enforce spend the router does not meter, respect the free-tier logging caveat, and request onboarding of a model not yet served.
 license: MIT
 metadata:
   version: 1.0.0
@@ -19,11 +19,10 @@ metadata:
 
 # openrouter-models
 
-Your locally served brain handles routine work. For reasoning or coding where a
-stronger hosted model would genuinely change the outcome, escalate through the
-shared router — a deliberate per-call choice, never an automatic on-error
-fallback. This skill covers what is available, what it costs, and the rules
-around it. `local-subagents` covers when to delegate and the mechanics of the call.
+A hosted model reaches delegated work only through a router alias, placed by
+the delegation hook; a session never names the model behind it. This skill
+covers what is available, what it costs, and the rules around it.
+`local-subagents` covers when to delegate and the mechanics of the call.
 
 ## The model set is enforced; the budget is yours to enforce
 
@@ -38,20 +37,19 @@ needs shared state plus a credential per caller, and a deliberately stateless
 router may have neither. Where that is so, no ceiling exists anywhere except in
 your own behaviour.
 
-### The budget: $1.00 per day, self-enforced
+### The budget: name a cap and apply it
 
-That is the standing default, and it is real only because you apply it. If your
-deployment states a different figure, use theirs; if it states none, use this
-one. Do not proceed without a number — "stop at the cap" means nothing if no
-cap is named, and an unnamed cap is how an account-wide credential ends up
-metered by nothing at all.
+A cap is real only because you apply it. If your deployment states a figure,
+use theirs; if it states none, name one yourself. Do not proceed without a
+number — "stop at the cap" means nothing if no cap is named, and an unnamed
+cap is how an account-wide credential ends up metered by nothing at all.
 
 - **Track your spend yourself.** Keep a running total in memory keyed by day
   (`openrouter-spend-<YYYY-MM-DD>`). After each paid call, estimate its cost
   from the response's token usage times the per-token prices you discovered,
   and add it. Check the total **before** every paid call.
-- **Stop at $1.00.** At or above it, use the locally served tier or a `:free`
-  variant instead, and note the deferral. Nothing else will stop you.
+- **Stop at the cap.** At or above it, defer the call and note the
+  deferral. Nothing else stops you.
 - **Never read "nothing stopped me" as permission.** An unenforced limit is
   still a limit; it is just one only you can apply.
 - **Prefer free variants** whenever they are adequate, subject to the egress
@@ -60,7 +58,7 @@ metered by nothing at all.
 - **Report what you have used** when you report spend-relevant work, so a human
   can see the total you are enforcing against.
 
-If your deployment DOES enforce spend, it will tell you so, and a `429` or a
+If your deployment DOES enforce spend, it says so, and a `429` or a
 spend-cap message is then also a correct answer to defer on. Trust what your
 deployment states over this skill, which describes the general case.
 
@@ -76,17 +74,6 @@ locally served tier or is not delegated at all. When in doubt, treat it as
 confidential — the cost of using a paid tier is bounded, the cost of a leak is
 not.
 
-## Prefer the free tier when it is adequate
-
-When the router serves a free handle that can plausibly do the subtask,
-prefer it over any paid tier — subject to the egress rule above (free tiers
-log prompt content; never send secrets, secret-store-adjacent context,
-infrastructure topology, incident detail, or personal data).
-
-A free handle is a **stable handle whose underlying model is repointed
-server-side** — its identity is not something to record or reason about.
-That is the existing "never write a model id" rule below, applied.
-
 ## Discover current models and prices
 
 The hosted catalog is public and keyless, so pricing research costs nothing:
@@ -100,8 +87,6 @@ curl -fsS --max-time 15 https://openrouter.ai/api/v1/models | jq '
 
 Useful selections:
 
-- Cheapest strong coders: filter ids matching the task domain, sort by
-  `completion_usd_per_mtok`, read the top few.
 - Free variants: `.data[] | select(.id | endswith(":free")) | .id`.
 - For "what is currently leading", pair the catalog with a short web check of
   the provider's public rankings — the catalog is ground truth for price and
@@ -113,8 +98,8 @@ Refresh this when you actually need it (prices move), not on a schedule.
 
 **A model existing upstream does not mean the router serves it.** The catalog
 above tells you what exists and what it costs; the router's own contract tells
-you what you may actually call. Get the served list from
-`local-subagents` step 3 and select only from that. Never write a model id
+you what you may actually call. The served list comes from
+`local-subagents` step 3. Never write a model id
 into a rule, skill, doc, or config — that is a second spelling that drifts from
 the registry, and this skill deliberately names none.
 

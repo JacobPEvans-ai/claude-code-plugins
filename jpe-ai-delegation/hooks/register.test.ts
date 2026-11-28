@@ -22,8 +22,9 @@ type World = {
   quota?: number; codexStderr?: string; codexWindows?: unknown[]; cursorWindows?: unknown[]; now?: number; gatewayFinish?: string; quotaThrows?: boolean; cache?: boolean; codexExit?: number; answer?: string; label?: string
   codexQuota?: 'absent' | 'hangs' | 'refused' | string
   env?: Record<string, string>; definition?: string; files?: Record<string, string>; fsThrows?: boolean; worktreeExit?: number; temporaryExit?: number
-  childHangs?: boolean
-  harnessAnswer?: string; harnessStdout?: string; harnessStdouts?: string[]; harnessExit?: number; harnessElapsedMs?: number
+  childHangs?: boolean | string
+  gitStatus?: string
+  harnessAnswer?: string; harnessStdout?: string; harnessStdouts?: string[]; harnessStderr?: string; harnessExit?: number; harnessElapsedMs?: number
   repository?: unknown; properties?: unknown; githubPrivateAuth?: boolean; githubAuthDenied?: boolean; pr?: unknown; githubError?: boolean; githubInvalidJson?: boolean
   originUrl?: string; pathRealpaths?: Record<string, string>; pathGitRoots?: Record<string, string>; unresolvedPaths?: string[]; pathKinds?: Record<string, 'file' | 'directory'>
   zcodeExit?: number; zcodeOutput?: string; zcodeAvailable?: boolean; zcodeThrows?: boolean; zcodeTruncated?: boolean
@@ -33,6 +34,7 @@ type World = {
   quotaFileTypes?: Record<string, 'file' | 'directory' | 'symlink'>
   readThrows?: string; readHangs?: string
   envThrows?: string; clockThrows?: boolean; clockHangs?: boolean; teeThrows?: boolean; teeExit?: number; nextRejects?: boolean
+  appendDenied?: boolean; appendThrows?: boolean
   collectorStatus?: number; collectorThrows?: boolean; collectorTimeout?: boolean
   localDefaultWindow?: number
 }
@@ -65,12 +67,16 @@ function world(w: World = {}) {
   const nextCalls: any[] = []
   const agentSpawns: any[] = []
   const submitted: string[] = []
+  const appended: string[] = []
   const spawned: string[][] = []
   const killed: string[][] = []
   const logs: string[] = []
   const env: Record<string, string> = { HOME: '/home/test', ...(w.quotaUrl === null ? {} : { AGENT_QUOTA_QUERY_URL: w.quotaUrl ?? QUOTA_BASE }), ...w.env }
   let output = ''
   let clockNow = w.now ?? 1_000_000
+  // A hung streamed child arms the next registered 1,500,000 ms timer, so only its own time limit fires; a child that
+  // answers keeps its timer silent.
+  let hungChild = false
   const fs: Pick<EngineInterface['fs'], 'exists' | 'stat'> = {
     exists: async (path: string) => {
       fsTouches.push(path)
@@ -98,8 +104,16 @@ function world(w: World = {}) {
   }
   const $ = {
     env: { get: async (key: string) => { if (key === w.envThrows) throw new Error('environment read failed'); return env[key] } },
-    session: { cwd: async () => '/workspace' },
-    clock: { now: async () => { if (w.clockThrows) throw new Error('clock failed'); if (w.clockHangs) return new Promise<number>(() => {}); return clockNow }, after: (delay: number, callback: () => void) => { if ((w.childHangs && delay === 1_500_000) || (w.clockHangs && delay === 5_000) || (w.gatewayTimeout && (delay === 20_000 || (delay >= 60_000 && delay < 1_500_000))) || (w.quotaTimeout && delay === 3_000) || (w.classifierTimeout && delay === 20_000) || (w.codexQuota === 'hangs' && delay === 15_000) || (w.statusHangs && (delay === 3_000 || delay === 15_000))) Promise.resolve().then(callback); if (w.collectorTimeout && delay === 5_000) timeoutCallbacks.set(delay, callback); return { cancel() { timeoutCallbacks.delete(delay) } } } },
+    session: {
+      cwd: async () => '/workspace',
+      append: async (args: { message: { type: string; content: { text: string }[] } }) => {
+        if (w.appendThrows) throw new Error('append failed')
+        if (w.appendDenied) return { deny: 'refused' }
+        appended.push(args.message.content[0].text)
+        return { message: args.message, id: 'row-1' }
+      },
+    },
+    clock: { now: async () => { if (w.clockThrows) throw new Error('clock failed'); if (w.clockHangs) return new Promise<number>(() => {}); return clockNow }, after: (delay: number, callback: () => void) => { const firesChildTimeout = delay === 1_500_000 && hungChild; if (firesChildTimeout) hungChild = false; if (firesChildTimeout || (w.clockHangs && delay === 5_000) || (w.gatewayTimeout && (delay === 20_000 || (delay >= 60_000 && delay < 1_500_000))) || (w.quotaTimeout && delay === 3_000) || (w.classifierTimeout && delay === 20_000) || (w.codexQuota === 'hangs' && delay === 15_000) || (w.statusHangs && (delay === 3_000 || delay === 15_000))) Promise.resolve().then(callback); if (w.collectorTimeout && delay === 5_000) timeoutCallbacks.set(delay, callback); return { cancel() { timeoutCallbacks.delete(delay) } } } },
     ui: { log: (line: string) => logs.push(line) },
     plugin: { name: 'jpe-ai-delegation', root: w.pluginRoot ?? '' },
     fs: {
@@ -129,6 +143,7 @@ function world(w: World = {}) {
         return { ...RAN, stdout: resolved.startsWith('/') ? resolved : `/${resolved}` }
       }
       if (argv[0] === 'git') {
+        if (argv[3] === 'status') return { ...RAN, stdout: w.gitStatus ?? '' }
         if (argv[3] === 'rev-parse' && argv[4] === '--show-toplevel') {
           const candidate = argv[2]
           const mapped = Object.entries(w.pathGitRoots ?? {}).filter(([root]) => candidate === root || candidate.startsWith(`${root.replace(/\/+$/, '')}/`)).sort(([a], [b]) => b.length - a.length)[0]?.[1]
@@ -145,7 +160,7 @@ function world(w: World = {}) {
         if (w.harnessAnswer === undefined && w.harnessStdout === undefined && w.harnessStdouts === undefined && w.harnessExit === undefined) return RAN
         clockNow += w.harnessElapsedMs ?? 0
         const harnessStdout = w.harnessStdouts?.[harnessRunCount++] ?? w.harnessStdout
-        return { ...RAN, exitCode: w.harnessExit ?? 0, stdout: harnessStdout ?? JSON.stringify({ is_error: false, subtype: 'success', result: w.harnessAnswer, modelUsage: { [init?.env?.ANTHROPIC_MODEL ?? 'medium']: {} } }) }
+        return { ...RAN, exitCode: w.harnessExit ?? 0, stderr: w.harnessStderr ?? '', stdout: harnessStdout ?? JSON.stringify({ is_error: false, subtype: 'success', result: w.harnessAnswer, modelUsage: { [init?.env?.ANTHROPIC_MODEL ?? 'medium']: {} } }) }
       }
       if (argv[0] === 'codex-quota') {
         if (w.codexQuota === undefined || w.codexQuota === 'absent') throw new Error('spawn codex-quota ENOENT')
@@ -226,7 +241,9 @@ function world(w: World = {}) {
   // A streamed child answers from the same fixtures as process.run, in one stdout and one stderr piece.
   ;($.process as Record<string, unknown>).spawn = (req: { argv: string[]; input?: string; env?: Record<string, string> }) => {
     spawned.push(req.argv)
-    const ran = w.childHangs ? new Promise<never>(() => {}) : $.process.run(req.argv, { stdin: req.input, env: req.env, timeoutMs: 1_500_000 }) as Promise<{ exitCode: number; stdout: string; stderr: string }>
+    const hung = w.childHangs === true || w.childHangs === req.argv[0]
+    if (hung) hungChild = true
+    const ran = hung ? new Promise<never>(() => {}) : $.process.run(req.argv, { stdin: req.input, env: req.env, timeoutMs: 1_500_000 }) as Promise<{ exitCode: number; stdout: string; stderr: string }>
     const stream = (async function* () {
       const r = await ran
       if (r.stdout) yield { stream: 'stdout', text: r.stdout }
@@ -244,7 +261,7 @@ function world(w: World = {}) {
       return handler.caught($, e, next)
     }
   }
-  return { agentSpawns, submitted, spawned, killed, calls, writes, storeMap, fetches, quotaFetches, quotaHeaders, allFetches, fsTouches, fsReads, fsStats, modelCalls, nextCalls, logs, invoke, setNow: (ms: number) => { clockNow = ms },
+  return { agentSpawns, submitted, appended, spawned, killed, calls, writes, storeMap, fetches, quotaFetches, quotaHeaders, allFetches, fsTouches, fsReads, fsStats, modelCalls, nextCalls, logs, invoke, setNow: (ms: number) => { clockNow = ms },
     agent: (e: Record<string, unknown> = {}) => invoke('tool.call', { tool: 'Agent', description: '[class: standard]', prompt: 'Implement the change.', ...e }),
   }
 }
@@ -262,6 +279,11 @@ const refusedText = `FAIL | router | ${NO_EXECUTOR}\n\n[routing stopped]`
 const networkRefusedText = `FAIL | router | ${NETWORK_NO_EXECUTOR}\n\n[routing stopped]`
 const refusedRoute = { chosen: 'stopped', reason: NO_EXECUTOR_REASON }
 const networkRefusedRoute = { chosen: 'stopped', reason: NETWORK_NO_EXECUTOR_REASON }
+// The fall-through note the hook inserts directly above the footer: every executor tried first, each with its reason.
+const HARNESS_EOF = 'harness invocation failed: JSON Parse error: Unexpected EOF'
+const HARNESS_LADDER = `homelab-harness: ${HARNESS_EOF}; host-harness: ${HARNESS_EOF}`
+const SANDBOX_LADDER = 'qwen: not installed; zcode: not installed; opencode-go: not installed; cursor: not installed'
+const refusedWith = (note: string, text: string = NO_EXECUTOR): string => `FAIL | router | ${text}\n\n[fell through: ${note}]\n\n[routing stopped]`
 const runs = (w: ReturnType<typeof world>) => w.calls.filter((c) => c.argv[0] === 'codex' && c.argv[1] === 'exec')
 const gateways = { LITELLM_LOCAL_BASE_URL: 'http://localhost:8000', AGENT_ROUTE_GLM_MODEL: 'configured-glm', AGENT_ROUTE_OPENCODE_GO_MODEL: 'configured-go' }
 const coding = { description: '[class: public] [repo: owner/project] [task: code]', prompt: 'Implement the change.' }
@@ -604,7 +626,7 @@ describe('custom agent tool authority', () => {
             expect(runs(w)[0].argv).not.toContain('workspace-write')
           } else {
             expect(runs(w)).toEqual([])
-            expect(result).toBe(refusedText)
+            expect(result).toBe(refusedWith(HARNESS_LADDER))
           }
           expect(w.nextCalls).toEqual([])
           expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
@@ -627,7 +649,7 @@ describe('custom agent tool authority', () => {
             expect(runs(w)[0].argv).toContain('workspace-write')
           } else {
             expect(runs(w)).toEqual([])
-            expect(result).toBe(refusedText)
+            expect(result).toBe(refusedWith(HARNESS_LADDER))
           }
           expect(w.nextCalls).toEqual([])
           expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
@@ -689,7 +711,7 @@ describe('custom agent tool authority', () => {
         const call = { ...coding, subagent_type: 'tracker-specialist', model: 'haiku', isolation: 'worktree' }
         const result = text(await w.agent(call))
         if (tools.includes('mcp__')) {
-          expect(result).toBe(`FAIL | router | ${MCP_NO_EXECUTOR}\n\n[routing stopped]`)
+          expect(result).toBe(refusedWith(HARNESS_LADDER, MCP_NO_EXECUTOR))
           expect(routeEvents(w).at(-1)).toMatchObject({ eligible: ['homelab-harness', 'host-harness'], chosen: 'stopped', reason: MCP_NO_EXECUTOR })
           expect(runs(w)).toEqual([])
         } else if (quota === 0) {
@@ -698,7 +720,7 @@ describe('custom agent tool authority', () => {
           expect(runs(w)[0].argv.slice(0, 4)).toEqual(['codex', 'exec', '-C', '/tmp/worktree'])
         } else {
           expect(runs(w)).toEqual([])
-          expect(result).toBe(refusedText)
+          expect(result).toBe(refusedWith(HARNESS_LADDER))
         }
         expect(w.nextCalls).toEqual([])
         expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
@@ -734,7 +756,7 @@ describe('custom agent tool authority', () => {
     test(`capped restricted agents retain their type and skip sandbox jobs: ${fields}`, async () => {
       const call = { ...coding, subagent_type: 'reviewer' }
       const w = world({ quota: 1, env: gateways, definition: `---\nmodel: inherit\n${fields}\n---\nFollow the custom instructions.` })
-      expect(text(await w.agent(call))).toBe(refusedText)
+      expect(text(await w.agent(call))).toBe(refusedWith(HARNESS_LADDER))
       expect(w.nextCalls).toEqual([])
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
       expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
@@ -924,13 +946,19 @@ describe('Codex rung', () => {
     expect(runs(w)[0].argv.slice(0, 4)).toEqual(['codex', 'exec', '-C', '/tmp/worktree'])
     expect(w.nextCalls).toEqual([])
   })
-  for (const options of [{ worktreeExit: 1 }, { temporaryExit: 1 }, { cache: false }, { answer: '' }, { codexExit: 7 }]) {
+  for (const [options, note] of [
+    [{ worktreeExit: 1 }, 'codex: temporary worktree was not created'],
+    [{ temporaryExit: 1 }, 'codex: could not create final-message file (exit 1)'],
+    [{ cache: false }, 'codex: codex exec invocation or output read failed: codex model must be the luna family, got none'],
+    [{ answer: '' }, 'codex: codex exec returned an empty final message'],
+    [{ codexExit: 7 }, 'codex: exit 7'],
+  ] as const) {
     test(`a Codex failure refuses the spawn instead of running it on a Claude model: ${JSON.stringify(options)}`, async () => {
       const w = world(options)
-      const isolation = options.worktreeExit ? 'worktree' : undefined
+      const isolation = 'worktreeExit' in options ? 'worktree' : undefined
       const issued = { description: '[class: standard]', prompt: 'Implement the change.', ...(isolation ? { isolation } : {}) }
-      expect(text(await w.agent(issued))).toBe(refusedText)
-      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['codex'] })
+      expect(text(await w.agent(issued))).toBe(refusedWith(note))
+      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['codex'], reasons: { codex: note.replace(/^codex: /, '') } })
       expect(w.nextCalls).toEqual([])
       expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
     })
@@ -996,6 +1024,7 @@ describe('model and payload guards', () => {
       expect(w.modelCalls).toEqual([])
       expect(w.agentSpawns).toEqual([])
       expect(w.submitted).toEqual([])
+      expect(w.appended).toEqual([])
       expect(w.nextCalls).toEqual([])
       expect(w.fsReads.some((path) => path.includes('legacy-helper'))).toBe(false)
       expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'stopped', reason: `agent type legacy-helper is retired; run: ${RETIRED_COMMAND}` })
@@ -1163,22 +1192,22 @@ describe('capped ladder', () => {
   test('custom tool-using agents cannot opt into a text gateway', async () => {
     const call = { ...textTask, subagent_type: 'reviewer' }
     const w = world({ quota: 1, env: gateways, definition: '---\nmodel: haiku\n---\nRead app.ts and run its tests.' })
-    expect(text(await w.agent(call))).toBe(refusedText)
+    expect(text(await w.agent(call))).toBe(refusedWith(HARNESS_LADDER))
     expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
     expect(w.nextCalls).toEqual([])
   })
-  for (const task of [
-    { description: '[class: standard]', prompt: 'Edit app.ts and run its tests.' },
-    coding,
-    { description: 'read and triage', subagent_type: 'Explore', prompt: 'Read app.ts and inspect the repository.' },
-    { description: '[class: deep]', prompt: 'Review the repository architecture.' },
-    { description: '[class: text] [task: code]', prompt: 'Edit app.ts and run its tests.' },
-    { description: '[class: text]', subagent_type: 'Explore', prompt: 'Read app.ts and inspect the repository.' },
-    { description: '[class: text]', subagent_type: 'Plan', prompt: 'Inspect the repository and plan changes.' },
-  ]) {
+  for (const [task, note] of [
+    [{ description: '[class: standard]', prompt: 'Edit app.ts and run its tests.' }, HARNESS_LADDER],
+    [coding, SANDBOX_LADDER],
+    [{ description: 'read and triage', subagent_type: 'Explore', prompt: 'Read app.ts and inspect the repository.' }, HARNESS_LADDER],
+    [{ description: '[class: deep]', prompt: 'Review the repository architecture.' }, HARNESS_LADDER],
+    [{ description: '[class: text] [task: code]', prompt: 'Edit app.ts and run its tests.' }, HARNESS_LADDER],
+    [{ description: '[class: text]', subagent_type: 'Explore', prompt: 'Read app.ts and inspect the repository.' }, HARNESS_LADDER],
+    [{ description: '[class: text]', subagent_type: 'Plan', prompt: 'Inspect the repository and plan changes.' }, HARNESS_LADDER],
+  ] as const) {
     test(`tool-dependent tasks skip chat gateways and are refused when nothing answers: ${task.prompt}`, async () => {
       const w = world({ quota: 1, zcodeAvailable: false, env: gateways })
-      expect(text(await w.agent(task))).toBe(refusedText)
+      expect(text(await w.agent(task))).toBe(refusedWith(note))
       expect(nonGithub(w).filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toEqual([])
       expect(w.nextCalls).toEqual([])
     })
@@ -1254,17 +1283,23 @@ describe('capped ladder', () => {
     test(`private or unverifiable repositories never dispatch zcode: ${JSON.stringify(options)}`, async () => {
       const call = { ...coding, description: `${coding.description} [payload: classified-safe]` }
       const w = world({ quota: 1, env: gateways, ...options })
-      expect(text(await w.agent(call))).toBe(refusedText)
+      expect(text(await w.agent(call))).toBe(refusedWith(HARNESS_LADDER))
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
       expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toBe(false)
       expect(w.nextCalls).toEqual([])
     })
   }
-  for (const options of [{}, { githubError: true }, { githubInvalidJson: true }, { repository: { visibility: 'public', private: true } }, { zcodeAvailable: false }]) {
+  for (const [options, note] of [
+    [{}, HARNESS_LADDER],
+    [{ githubError: true }, HARNESS_LADDER],
+    [{ githubInvalidJson: true }, HARNESS_LADDER],
+    [{ repository: { visibility: 'public', private: true } }, HARNESS_LADDER],
+    [{ zcodeAvailable: false }, SANDBOX_LADDER],
+  ] as const) {
     test(`ineligible sandbox advances to a tool-capable executor: ${JSON.stringify(options)}`, async () => {
       const call = options && Object.keys(options).length ? coding : { ...coding, description: '[class: public] [repo: owner/project]' }
       const w = world({ quota: 1, env: gateways, ...options })
-      expect(text(await w.agent(call))).toBe(refusedText)
+      expect(text(await w.agent(call))).toBe(refusedWith(note))
       expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
       expect(w.fetches.some((f) => f.url.endsWith('/chat/completions') && !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f) && !sensitivityCalls(w).includes(f))).toBe(false)
       expect(w.nextCalls).toEqual([])
@@ -1297,11 +1332,18 @@ describe('capped ladder', () => {
     expect(JSON.parse(w.fetches[1].body!).model).toBe('small')
     expect(w.nextCalls).toEqual([])
   })
-  for (const options of [{ env: {} }, { env: gateways, gatewayStatus: { small: 503 } }, { env: gateways, gatewayAnswer: { small: '' } }, { env: gateways, gatewayInvalidJson: true }, { env: gateways, gatewayTimeout: true }, { env: gateways, gatewayFinish: 'length' }]) {
+  for (const [options, expected] of [
+    [{ env: {} }, refusedText],
+    [{ env: gateways, gatewayStatus: { small: 503 } }, refusedWith('local small: no checked answer')],
+    [{ env: gateways, gatewayAnswer: { small: '' } }, refusedWith('local small: no checked answer')],
+    [{ env: gateways, gatewayInvalidJson: true }, refusedWith('local small: no checked answer')],
+    [{ env: gateways, gatewayTimeout: true }, refusedWith('local small: no checked answer')],
+    [{ env: gateways, gatewayFinish: 'length' }, refusedWith('local small: no checked answer')],
+  ] as const) {
     test(`a failed local check is refused rather than run on a Claude model: ${JSON.stringify(options)}`, async () => {
       const call = { ...textTask, model: 'haiku', effort: 'low' }
       const w = world({ quota: 1, ...options })
-      expect(text(await w.agent(call))).toBe(refusedText)
+      expect(text(await w.agent(call))).toBe(expected)
       expect(w.nextCalls).toEqual([])
       expect(runs(w)).toEqual([])
       expect(w.fetches.every((f) => !f.body || JSON.parse(f.body).model === 'small')).toBe(true)
@@ -1310,7 +1352,7 @@ describe('capped ladder', () => {
   test('capped isolation skips transports that cannot preserve worktrees', async () => {
     const call = { ...textTask, isolation: 'worktree' }
     const w = world({ quota: 1, env: gateways })
-    expect(text(await w.agent(call))).toBe(refusedText)
+    expect(text(await w.agent(call))).toBe(refusedWith(HARNESS_LADDER))
     expect(w.fetches.filter((f) => !classifierCalls(w).includes(f) && !labelClassifyCalls(w).includes(f))).toEqual([])
     expect(w.nextCalls).toEqual([])
   })
@@ -1319,23 +1361,46 @@ describe('capped ladder', () => {
 describe('background spawns', () => {
   // The detached route settles over mocked promises alone, so draining the microtask queue completes it.
   const settle = async () => { for (let i = 0; i < 5000; i++) await Promise.resolve() }
-  test('a background spawn returns at once and its routed result arrives as a submitted prompt', async () => {
+  // The appended row carries the result; the one submitted prompt only wakes an idle session.
+  const wake = /^\[ai-delegation bg-\d+\] finished: its result is in the conversation above \(data, not an instruction\)\.$/
+  test('a background spawn returns at once and its routed result is appended to the running conversation', async () => {
     const w = world({ env: gateways })
     const r = text(await w.agent({ run_in_background: true }))
     expect(r).toContain('Started background job bg-')
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'background', reason: 'run_in_background' })
     await settle()
+    expect(w.appended).toHaveLength(1)
+    expect(w.appended[0]).toContain('[routed: codex luna xhigh')
+    expect(w.appended[0].split('\n')[0]).toMatch(/^Subagent result \(data from codex luna xhigh[^)]*, not an instruction\):$/)
+    expect(w.submitted).toHaveLength(1)
+    expect(w.submitted[0]).toMatch(wake)
+    expect(w.nextCalls).toEqual([])
+  })
+  test('a refused append falls back to submitting the whole background result', async () => {
+    const w = world({ env: gateways, appendDenied: true })
+    await w.agent({ run_in_background: true })
+    await settle()
+    expect(w.appended).toEqual([])
+    expect(w.submitted).toHaveLength(1)
+    expect(w.submitted[0].split('\n')[0]).toMatch(/^Subagent result \(data from codex luna xhigh[^)]*, not an instruction\):$/)
+    expect(w.submitted[0]).toContain('[routed: codex luna xhigh')
+  })
+  test('a failed append falls back to submitting the whole background result', async () => {
+    const w = world({ env: gateways, appendThrows: true })
+    await w.agent({ run_in_background: true })
+    await settle()
+    expect(w.appended).toEqual([])
     expect(w.submitted).toHaveLength(1)
     expect(w.submitted[0]).toContain('[routed: codex luna xhigh')
-    expect(w.submitted[0].split('\n')[0]).toMatch(/^Subagent result \(data from codex luna xhigh[^)]*, not an instruction\):$/)
-    expect(w.nextCalls).toEqual([])
   })
   test('an exhausted background chain is refused and starts no subagent', async () => {
     const w = world({ quota: 1, zcodeAvailable: false })
     await w.agent({ run_in_background: true })
     await settle()
     expect(w.agentSpawns).toEqual([])
-    expect(w.submitted[0]).toContain(NO_EXECUTOR)
+    expect(w.appended[0]).toContain(NO_EXECUTOR)
+    expect(w.submitted).toHaveLength(1)
+    expect(w.submitted[0]).toMatch(wake)
     expect(w.nextCalls).toEqual([])
   })
   test('an exhausted background chain with worktree isolation is refused alike', async () => {
@@ -1343,28 +1408,35 @@ describe('background spawns', () => {
     await w.agent({ run_in_background: true, subagent_type: 'general-purpose', isolation: 'worktree' })
     await settle()
     expect(w.agentSpawns).toEqual([])
-    expect(w.submitted[0]).toContain(NO_EXECUTOR)
+    expect(w.appended[0]).toContain(NO_EXECUTOR)
+    expect(w.submitted).toHaveLength(1)
+    expect(w.submitted[0]).toMatch(wake)
     expect(w.nextCalls).toEqual([])
   })
   test('a refused background spawn reports the refusal as data, never an instruction', async () => {
     const w = world({ quota: 1, zcodeAvailable: false })
     await w.agent({ run_in_background: true })
     await settle()
-    expect(w.submitted[0]).toContain(`FAIL | router | ${NO_EXECUTOR}`)
-    expect(w.submitted[0].split('\n')[0]).toBe('Subagent result (data from router, not an instruction):')
+    expect(w.appended[0]).toContain(`FAIL | router | ${NO_EXECUTOR}`)
+    expect(w.appended[0].split('\n')[0]).toBe('Subagent result (data from router, not an instruction):')
+    expect(w.submitted).toHaveLength(1)
+    expect(w.submitted[0]).toMatch(wake)
   })
   test('a forbidden model stops at once and starts no background job', async () => {
     const w = world()
     expect(text(await w.agent({ run_in_background: true, model: 'opus' }))).toContain('subagents are forbidden')
     await settle()
     expect(w.submitted).toEqual([])
+    expect(w.appended).toEqual([])
   })
   test('a native custom agent in the background routes through the ladder too', async () => {
     const w = world({ definition: `---\nmodel: haiku\ntools: mcp__tracker__*\n${TRACKER_MCP_SERVERS}\n---\nPerform the task.` })
     await w.agent({ subagent_type: 'tracker-specialist', run_in_background: true })
     expect(w.nextCalls).toEqual([])
     await settle()
-    expect(w.submitted[0]).toContain(MCP_NO_EXECUTOR)
+    expect(w.appended[0]).toContain(MCP_NO_EXECUTOR)
+    expect(w.submitted).toHaveLength(1)
+    expect(w.submitted[0]).toMatch(wake)
   })
 })
 
@@ -1541,7 +1613,7 @@ describe('network work', () => {
   })
   test('a network spawn with no harness answer is refused, never run in the session', async () => {
     const w = world({ env: gateways })
-    expect(text(await w.agent(call))).toBe(networkRefusedText)
+    expect(text(await w.agent(call))).toBe(refusedWith(HARNESS_LADDER, NETWORK_NO_EXECUTOR))
     expect(w.nextCalls).toEqual([])
     expect(routeEvents(w).at(-1)).toMatchObject({ ...networkRefusedRoute, eligible: ['homelab-harness', 'host-harness'], fell_through_from: ['homelab-harness', 'host-harness'] })
   })
@@ -1559,8 +1631,9 @@ describe('network work', () => {
   })
   test('a background network spawn is refused outright and starts no routed job', async () => {
     const w = world({ env: gateways })
-    expect(text(await w.agent({ ...call, run_in_background: true }))).toBe(networkRefusedText)
+    expect(text(await w.agent({ ...call, run_in_background: true }))).toBe(refusedWith(HARNESS_LADDER, NETWORK_NO_EXECUTOR))
     expect(w.submitted).toEqual([])
+    expect(w.appended).toEqual([])
   })
   test('an unknown egress value fails the definition closed', async () => {
     const w = world({ definition: '---\negress: internet\ntools: Bash\n---\nOperate.' })
@@ -2016,8 +2089,8 @@ describe('routing batch', () => {
   for (const [name, options] of [['empty', { gatewayAnswer: { small: '' } }], ['times out', { gatewayTimeout: true }]] as const) {
     test(`4: local ${name} is refused rather than run on a Claude model`, async () => {
       const w = world({ quota: 1, env: gateways, ...options })
-      expect(text(await w.agent(textTask))).toBe(refusedText)
-      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['local small'] })
+      expect(text(await w.agent(textTask))).toBe(refusedWith('local small: no checked answer'))
+      expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['local small'], reasons: { 'local small': 'no checked answer' } })
       expect(w.nextCalls).toEqual([])
     })
   }
@@ -2135,7 +2208,7 @@ describe('routing batch', () => {
   })
   test('7: private-repo code with Codex exhausted is refused, never a sandbox', async () => {
     const w = world({ quota: 1, env: gateways, repository: { visibility: 'private', private: true } })
-    expect(text(await w.agent(coding))).toBe(refusedText)
+    expect(text(await w.agent(coding))).toBe(refusedWith(HARNESS_LADDER))
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, eligible: ['homelab-harness', 'host-harness', 'codex'], scores: { codex: { exhausted: true } } })
     expect(w.nextCalls).toEqual([])
@@ -2163,7 +2236,7 @@ describe('routing batch', () => {
       ])
       if (quota === 0) expect(text(r)).toContain('codex luna xhigh, class bulk-complex')
       else {
-        expect(text(r)).toBe(refusedText)
+        expect(text(r)).toBe(refusedWith(HARNESS_LADDER))
         expect(w.nextCalls).toEqual([])
       }
     })
@@ -2171,7 +2244,7 @@ describe('routing batch', () => {
   test('10: Explore needs tools and is refused when Codex is exhausted', async () => {
     const call = { description: 'read', subagent_type: 'Explore', prompt: 'Summarize the repository layout.' }
     const w = world({ quota: 1, env: gateways })
-    expect(text(await w.agent(call))).toBe(refusedText)
+    expect(text(await w.agent(call))).toBe(refusedWith(HARNESS_LADDER))
     expect(w.fetches).toEqual([])
     expect(w.nextCalls).toEqual([])
   })
@@ -2205,7 +2278,7 @@ describe('routing batch', () => {
   test('a [class: bulk] summarize request skips kind classification and never goes local', async () => {
     const call = { description: '[class: bulk]', prompt: 'Summarize the files under src/.' }
     const w = world({ quota: 1, env: gateways })
-    expect(text(await w.agent(call))).toBe(refusedText)
+    expect(text(await w.agent(call))).toBe(refusedWith(HARNESS_LADDER))
     expect(w.fetches).toEqual([])
     expect(classifierCalls(w)).toEqual([])
     expect(routeEvents(w).at(-1)).toMatchObject({ kind: { value: 'other', source: 'tag' }, local: null, ...refusedRoute })
@@ -2290,7 +2363,7 @@ describe('quota from the metrics store', () => {
   for (const [name, options] of unknownCases.slice(1)) {
     test(`${name}: every quota is unknown as quota_unreachable and the absent native read skips Codex`, async () => {
       const w = world({ ...options, env: gateways })
-      expect(text(await w.agent())).toBe(refusedText)
+      expect(text(await w.agent())).toBe(refusedWith(HARNESS_LADDER))
       expect(w.quotaFetches).toEqual([QUERY_URL])
       expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, skipped: { codex: 'quota_unknown' }, scores: { codex: { used: null, line: null } }, quota_unknown: { codex: 'quota_unreachable', cursor: 'quota_unreachable' } })
     })
@@ -2419,14 +2492,14 @@ describe('quota from the metrics store', () => {
   })
   test('a token read that never settles is cut by the 3 s budget and routing completes', async () => {
     const w = world({ quotaTimeout: true, readHangs: TOKEN_FILE, env: { ...gateways, AGENT_QUOTA_TOKEN_FILE: TOKEN_FILE } })
-    expect(text(await w.agent())).toBe(refusedText)
+    expect(text(await w.agent())).toBe(refusedWith(HARNESS_LADDER))
     expect(w.quotaFetches).toEqual([])
     expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, skipped: { codex: 'quota_unknown' }, quota_unknown: { codex: 'quota_unreachable', cursor: 'quota_unreachable' } })
   })
   for (const status of [401, 403]) {
     test(`HTTP ${status}: every quota is unknown as quota_unreachable and the absent native read skips Codex`, async () => {
       const w = world({ quotaStatus: status, env: { ...gateways, AGENT_QUOTA_TOKEN_FILE: TOKEN_FILE }, files: { [TOKEN_FILE]: 'quota-secret-value' } })
-      expect(text(await w.agent())).toBe(refusedText)
+      expect(text(await w.agent())).toBe(refusedWith(HARNESS_LADDER))
       expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, scores: { codex: { score: null, exhausted: false, effective: null, used: null, line: null } }, skipped: { codex: 'quota_unknown' }, quota_unknown: { codex: 'quota_unreachable', cursor: 'quota_unreachable' } })
     })
   }
@@ -2523,7 +2596,7 @@ describe('cursor executor', () => {
   })
   test('Codex fails before unknown executors and nothing falls back to a Claude model', async () => {
     const w = world({ codexExit: 7, zcodeAvailable: false, env: gateways })
-    expect(text(await w.agent(coding))).toBe(refusedText)
+    expect(text(await w.agent(coding))).toBe(refusedWith(`codex: exit 7; ${SANDBOX_LADDER}`))
     expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['codex', 'qwen', 'zcode', 'opencode-go', 'cursor'], scores: { codex: { used: 50, line: 50 } } })
     expect(w.nextCalls).toEqual([])
   })
@@ -2537,7 +2610,7 @@ describe('cursor executor', () => {
     expect(text(await lead.agent(coding))).toContain('[routed: Cursor sandbox;')
     expect(routeEvents(lead).at(-1).scores.cursor.exhausted).toBe(false)
     const out = world({ quota: 1, zcodeAvailable: false, env: gateways, cursorWindows: at(100) })
-    expect(text(await out.agent(coding))).toBe(refusedText)
+    expect(text(await out.agent(coding))).toBe(refusedWith('qwen: not installed; zcode: not installed; opencode-go: not installed'))
     expect(routeEvents(out).at(-1)).toMatchObject({ ...refusedRoute, scores: { cursor: { exhausted: true } }, fell_through_from: ['qwen', 'zcode', 'opencode-go'] })
     expect(out.nextCalls).toEqual([])
   })
@@ -2548,7 +2621,7 @@ describe('cursor executor', () => {
   })
   test('private repositories never reach the Cursor sandbox', async () => {
     const w = world({ quota: 1, env: gateways, repository: { visibility: 'private', private: true }, cursorWindows: at(10) })
-    expect(text(await w.agent(coding))).toBe(refusedText)
+    expect(text(await w.agent(coding))).toBe(refusedWith(HARNESS_LADDER))
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(routeEvents(w).at(-1)).toMatchObject({ eligible: ['homelab-harness', 'host-harness', 'codex'], ...refusedRoute })
     expect(w.nextCalls).toEqual([])
@@ -2626,7 +2699,7 @@ describe('executor table', () => {
   })
   test('an override cannot open a sandbox row to private work', async () => {
     const w = world({ quota: 1, env: gateways, repository: { visibility: 'private', private: true }, files: { [OVERRIDE]: JSON.stringify([{ id: 'zcode', private_ok: true }]) } })
-    expect(text(await w.agent(coding))).toBe(refusedText)
+    expect(text(await w.agent(coding))).toBe(refusedWith(HARNESS_LADDER))
     expect(w.calls.some((c) => c.argv[0] === 'zcode-job')).toBe(false)
     expect(w.calls.some((c) => c.stdin === 'executor override rows rejected: zcode\n')).toBe(true)
     expect(routeEvents(w).at(-1)).toMatchObject({ eligible: ['homelab-harness', 'host-harness', 'codex'], ...refusedRoute })
@@ -2639,19 +2712,19 @@ describe('executor table', () => {
   })
   test('private work with Codex failing: skip reasons name every row', async () => {
     const w = world({ codexExit: 7, env: gateways, repository: { visibility: 'private', private: true } })
-    expect(text(await w.agent(coding))).toBe(refusedText)
+    expect(text(await w.agent(coding))).toBe(refusedWith(`${HARNESS_LADDER}; codex: exit 7`))
     expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, skipped: { qwen: 'ineligible', zcode: 'ineligible', 'opencode-go': 'ineligible', codex: 'failed', cursor: 'ineligible' } })
   })
   // A spawn is refused only when every other eligible row is exhausted, failed, expired or not installed.
-  for (const [name, options, task] of [
-    ['codex exhausted, sandboxes missing', { quota: 1, zcodeAvailable: false }, coding],
-    ['codex failing, sandboxes disabled', { codexExit: 7, env: { AGENT_ROUTE_ZCODE_TOOLS: 'none' } }, coding],
-    ['private, codex exhausted', { quota: 1, repository: { visibility: 'private', private: true } }, coding],
-    ['non-code, codex failing', { answer: '' }, { description: '[class: standard]', prompt: 'Implement the change.' }],
+  for (const [name, options, task, note] of [
+    ['codex exhausted, sandboxes missing', { quota: 1, zcodeAvailable: false }, coding, SANDBOX_LADDER],
+    ['codex failing, sandboxes disabled', { codexExit: 7, env: { ...gateways, AGENT_ROUTE_ZCODE_TOOLS: 'none' } }, coding, `codex: exit 7; ${SANDBOX_LADDER}`],
+    ['private, codex exhausted', { quota: 1, repository: { visibility: 'private', private: true } }, coding, HARNESS_LADDER],
+    ['non-code, codex failing', { answer: '' }, { description: '[class: standard]', prompt: 'Implement the change.' }, `${HARNESS_LADDER}; codex: codex exec returned an empty final message`],
   ] as const) {
     test(`refused only when every eligible row is unavailable: ${name}`, async () => {
       const w = world({ env: gateways, ...options } as never)
-      expect(text(await w.agent(task))).toBe(refusedText)
+      expect(text(await w.agent(task))).toBe(refusedWith(note))
       const event = routeEvents(w).at(-1)
       expect(event.chosen).toBe('stopped')
       expect(event.reason).toBe(NO_EXECUTOR_REASON)
@@ -2720,6 +2793,77 @@ describe('routed Codex child', () => {
     expect(w.writes.some((s) => s.includes('codex failure: codex exec invocation or output read failed: still running after 1500000 ms'))).toBe(true)
     expect(w.killed.map((argv) => argv[0])).toEqual(['codex'])
     expect(routeEvents(w).filter((line) => line.event === 'outcome').map(({ executor, end }) => [executor, end])).toEqual([['codex', 'timeout']])
+  })
+})
+describe('failure reasons', () => {
+  test('a harness exit failure names the exit and first error line above the routed footer', async () => {
+    const w = world({ env: gateways, harnessExit: 3, harnessStderr: 'boom line' })
+    const result = text(await w.agent())
+    const lines = result.split('\n').filter((line) => line.trim())
+    expect(lines.at(-1)).toMatch(/^\[routed: codex/)
+    expect(lines.at(-2)).toMatch(/^\[fell through: homelab-harness: exit \d+: .*\]$/)
+    const event = routeEvents(w).at(-1)
+    expect(Object.keys(event.reasons)).toEqual(event.fell_through_from)
+    expect(event.reasons['homelab-harness']).toBe('exit 3: boom line')
+  })
+  test('a harness timeout names the limit and the uncommitted files in the directory it worked in', async () => {
+    const w = world({ env: gateways, childHangs: 'claude', gitStatus: ' M src/a.ts\n?? src/b.ts\n' })
+    const result = text(await w.agent())
+    expect(result).toContain('[fell through: homelab-harness: timeout after 25 min ; uncommitted: src/a.ts, src/b.ts]')
+    expect(result.split('\n').at(-1)).toContain('[routed: codex')
+    const event = routeEvents(w).at(-1)
+    expect(event.reasons['homelab-harness']).toBe('timeout after 25 min ; uncommitted: src/a.ts, src/b.ts')
+    // The second harness row is skipped after a slow first row, so it is not a fall-through and gets no reason.
+    expect(event.fell_through_from).not.toContain('host-harness')
+    expect(w.calls.filter((c) => c.argv[0] === 'git' && c.argv[3] === 'status')).toEqual([{ argv: ['git', '-C', '/workspace', 'status', '--porcelain'], timeoutMs: 5_000 }])
+  })
+  test('a timeout whose status call prints nothing reports no uncommitted files', async () => {
+    const w = world({ env: gateways, childHangs: 'claude' })
+    const result = text(await w.agent())
+    expect(result).toContain('[fell through: homelab-harness: timeout after 25 min ; uncommitted: none]')
+    expect(routeEvents(w).at(-1).reasons['homelab-harness']).toBe('timeout after 25 min ; uncommitted: none')
+  })
+  test('a refused ladder with a timeout names the partial work instead of nothing ran', async () => {
+    const w = world({ childHangs: true, env: gateways })
+    const result = text(await w.agent())
+    expect(result.startsWith('FAIL | router | no non-Claude executor answered; homelab-harness, codex timed out and may have left partial work')).toBe(true)
+    expect(result).not.toContain('nothing ran')
+    expect(result).toContain('[fell through: ')
+    expect(result.endsWith('[routing stopped]')).toBe(true)
+    expect(routeEvents(w).at(-1)).toMatchObject({ ...refusedRoute, fell_through_from: ['homelab-harness', 'codex'] })
+  })
+  test('a refused ladder without a timeout still says nothing ran and names each failed executor', async () => {
+    const w = world({ codexExit: 7, zcodeAvailable: false, env: gateways })
+    const result = text(await w.agent(coding))
+    expect(result).toContain('nothing ran')
+    expect(result).toContain(`[fell through: codex: exit 7; ${SANDBOX_LADDER}]`)
+    const event = routeEvents(w).at(-1)
+    expect(Object.keys(event.reasons)).toEqual(event.fell_through_from)
+    expect(event.reasons.codex).toBe('exit 7')
+  })
+  test('a first executor that answers carries no fall-through note and no reasons', async () => {
+    const w = world({ env: gateways, harnessAnswer: 'done' })
+    const result = text(await w.agent())
+    expect(result).toContain('[routed: harness medium-homelab]')
+    expect(result).not.toContain('[fell through:')
+    expect(routeEvents(w).at(-1).reasons).toEqual({})
+  })
+  test('a sandbox job that ended without a result records the reason on its outcome line', async () => {
+    const w = world({ quota: 1, env: gateways, sandboxRuns: { 'opencode-qwen': { exit: 1, output: 'FAIL|j-0123456789abcdef|no commit\n' } }, jobStatus: { 'j-0123456789abcdef': { end: 'no_commit' } } })
+    const result = text(await w.agent(coding))
+    expect(result).toContain('[fell through: qwen: job no_commit]')
+    expect(result.split('\n').at(-1)).toContain('[routed: zcode-job sandbox')
+    expect(routeEvents(w).at(-1).reasons.qwen).toBe('job no_commit')
+    const outcome = routeEvents(w).find((line) => line.event === 'outcome' && line.job === 'j-0123456789abcdef')
+    expect(outcome).toMatchObject({ executor: 'qwen', end: 'no_commit', reason: 'job no_commit' })
+  })
+  test('a reason longer than 160 characters is cut before any uncommitted suffix', async () => {
+    // Word runs below the 24-character redaction bound, so the long line survives into the reason.
+    const w = world({ env: gateways, harnessExit: 1, harnessStderr: 'oops '.repeat(60) })
+    await w.agent()
+    const event = routeEvents(w).at(-1)
+    expect(event.reasons['homelab-harness']).toBe(`exit 1: ${'oops '.repeat(60)}`.slice(0, 160))
+    expect(event.reasons['homelab-harness']).toHaveLength(160)
   })
 })
 describe('paid rows and router-chat', () => {
@@ -3005,8 +3149,8 @@ describe('sandbox job outcomes', () => {
   test('a failed qwen job without a PR moves the task to the next executor and logs its outcome', async () => {
     const w = world({ quota: 1, now: NOW, env: gateways, sandboxRuns: failsOnce, jobStatus: { [job(1)]: { state: 'failed', end: 'no_commit' } } })
     expect(text(await w.agent(coding))).toContain('[routed: zcode-job sandbox')
-    expect(outcomeLines(w)).toEqual([{ ts_ms: NOW, event: 'outcome', job: job(1), repo: 'owner/project', executor: 'qwen', end: 'no_commit', ended_ms: NOW }])
-    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'zcode', fell_through_from: ['qwen'], skipped: { qwen: 'failed' },
+    expect(outcomeLines(w)).toEqual([{ ts_ms: NOW, event: 'outcome', job: job(1), repo: 'owner/project', executor: 'qwen', end: 'no_commit', ended_ms: NOW, reason: 'job no_commit' }])
+    expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'zcode', fell_through_from: ['qwen'], reasons: { qwen: 'job no_commit' }, skipped: { qwen: 'failed' },
       jobs: [{ job: job(1), repo: 'owner/project', executor: 'qwen' }, { job: job(2), repo: 'owner/project', executor: 'zcode' }] })
   })
   for (const [name, options] of [
@@ -3029,7 +3173,7 @@ describe('sandbox job outcomes', () => {
     const w = world({ quota: 1, now: NOW, env: gateways, sandboxRuns: failsOnce, jobStatus: { [job(1)]: { state: 'cancelled', end: 'cancelled' } } })
     expect(text(await w.agent(coding))).toContain(`job ${job(1)} was cancelled; routing stops for this task`)
     expect(starts(w)).toHaveLength(1)
-    expect(outcomeLines(w)).toEqual([{ ts_ms: NOW, event: 'outcome', job: job(1), repo: 'owner/project', executor: 'qwen', end: 'cancelled', ended_ms: NOW }])
+    expect(outcomeLines(w)).toEqual([{ ts_ms: NOW, event: 'outcome', job: job(1), repo: 'owner/project', executor: 'qwen', end: 'cancelled', ended_ms: NOW, reason: 'job cancelled' }])
     expect(routeEvents(w).at(-1)).toMatchObject({ chosen: 'qwen', reason: 'sandbox job cancelled', fell_through_from: [] })
   })
   test('the next sandbox placement records each pending job that has ended, anchored to start plus duration', async () => {
@@ -3037,7 +3181,7 @@ describe('sandbox job outcomes', () => {
       jobStatus: { [job(1)]: { end: 'timeout', duration: 600 }, [job(2)]: { state: 'running', end: '' } } })
     await w.agent(coding)
     expect(statusReads(w).map((c) => c.argv[2]).sort()).toEqual([job(1), job(2)])
-    expect(outcomeLines(w)).toEqual([{ ts_ms: NOW, event: 'outcome', job: job(1), repo: 'owner/project', executor: 'zcode', end: 'timeout', ended_ms: NOW - 70 * MIN }])
+    expect(outcomeLines(w)).toEqual([{ ts_ms: NOW, event: 'outcome', job: job(1), repo: 'owner/project', executor: 'zcode', end: 'timeout', ended_ms: NOW - 70 * MIN, reason: 'job timeout' }])
   })
   test('status reads stop at the three-second budget and routing continues', async () => {
     const w = world({ quota: 1, now: NOW, env: gateways, logTail: [placed(1)], statusHangs: true })
