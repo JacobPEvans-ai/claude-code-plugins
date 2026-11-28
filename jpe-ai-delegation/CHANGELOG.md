@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.0](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.37.2...jpe-ai-delegation-v1.38.0) (2026-11-28)
+
+
+### Features
+
+* **jpe-ai-delegation:** name each failed executor and report a timeout as partial work ([#945](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/945)) ([829e4ae](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/829e4ae313a90dee07ada940aa52cce771245025))
+
 ## [1.37.2](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.37.1...jpe-ai-delegation-v1.37.2) (2026-11-28)
 
 
