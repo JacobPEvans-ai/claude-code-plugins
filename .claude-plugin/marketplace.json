@@ -85,7 +85,7 @@
       "name": "github-workflows",
       "source": "./github-workflows",
       "description": "PR management, multi-repo PR finalization, and issue shaping with Shape Up methodology",
-      "version": "6.16.2",
+      "version": "6.17.0",
       "author": {
         "name": "JacobPEvans"
       }
