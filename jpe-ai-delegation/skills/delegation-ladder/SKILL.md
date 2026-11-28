@@ -1,13 +1,13 @@
 ---
 name: delegation-ladder
-description: Apply the executor ladder for the maintainer's own setup, including eligibility and verification rules.
+description: "Describes how the maintainer's delegation hook places every spawn: task tags, route lines, refusals and verification rules. Use when tagging, sending or checking delegated work on the maintainer's own setup."
 ---
 
 # Delegation ladder
 
 The routing statement is AGENTS.md, 'Delegation routing', in the shared instructions repository. This skill does
 not restate it. The hook places every spawn. The sections below say what the hook does, how to tag a task and how
-to check a result.
+to check a result. Shared doctrine: `prompt://dryvist/auto-ai-agent/model-delegation`.
 
 - Codex qualifies while `codex-quota` exits 0 (more than 5% left).
 - Complicated bulk and mandatory auth, secrets, router, memory and cluster topics name `[class: bulk-complex]`.
@@ -15,14 +15,14 @@ to check a result.
   Leak-scan it before merge. Never auto-merge it.
 - Antigravity (`agy`) stays a second-opinion reviewer, never an executor.
 
-The hook ranks eligible executors by live quota, as described below. The `agent-route` helper does not read quota:
-it reports the first eligible executor from this fixed table.
+The hook ranks the eligible executors at call time, as described below. The `agent-route` helper does not read quota:
+it reports a route from the hook's ladder data.
 
-| Kind | Ladder | Sandbox eligibility | Use |
-| --- | --- | --- | --- |
-| `code` | Qwen sandbox -> zcode-job sandbox -> Codex -> Z.ai GLM -> OpenCode Go | Public coding tasks | Implementation |
-| `private` | Codex | Ineligible | Private tasks |
-| `other` | Codex -> Z.ai GLM -> OpenCode Go | Ineligible | Reads, triage, summaries, review and planning |
+| Kind | Sandbox eligibility | Use |
+| --- | --- | --- |
+| `code` | Public coding tasks | Implementation |
+| `private` | Ineligible | Private tasks |
+| `other` | Ineligible | Reads, triage, summaries, review and planning |
 
 ## Dispatch and completion
 
@@ -32,9 +32,8 @@ systems. The hook screens inline payloads locally before calling any classifier
 or executor; it cannot inspect attachments or files that workers might read.
 The lead must keep prohibited content out of executor-accessible context.
 
-Codex model selection follows AGENTS.md, 'Delegation routing' in the shared
-instructions repository; the hook uses the newest listed slug in its local
-model cache. Plan, design and architecture review use the `plan` or `deep` class and a read-only sandbox,
+Codex routing follows AGENTS.md, 'Delegation routing' in the shared
+instructions repository. Plan, design and architecture review use the `plan` or `deep` class and a read-only sandbox,
 as do `Explore` and `Plan` agents. Explicit class tags select these routes;
 mandatory bulk-complex topics override model selection while preserving an
 explicit `plan` or `deep` read-only sandbox. Explicit models, named agents and
@@ -82,18 +81,15 @@ decision to `~/.claude/ai-delegation.log`:
    15 minutes ago reads as `quota_stale`; an executor with no series reads as
    `quota_missing`. Unknown is never scored as empty or full, and the route
    event lists each reason under `quota_unknown`. An executor with a
-   live window at 95% or more drops out. Order: promotions; at/below-line by distance
-   (furthest under), no readings in table order, then over-line by distance (least over).
-   Pace line: 0 at start, 100 one day before reset (at reset for <2-day windows); use
-   each executor's smallest distance across windows. Effective score (headroom / (price × peak)) is route-line telemetry only, not ranking.
-   The executor table in `hooks/lib/policy.ts` lists Qwen, ZCode, OpenCode Go, Codex and Cursor, each with
-   transport, trust, `private_ok`, quota executor name, price and peak
-   windows (ZCode costs double Mon–Fri 06:00–10:00 UTC). `~/.config/ai-delegation/executors.json` (a JSON
+   live window at 95% or more drops out. The hook then ranks the eligible
+   executors at call time.
+   Executor rows live in `hooks/lib/policy.ts`, each with
+   transport, trust and `private_ok`. `~/.config/ai-delegation/executors.json` (a JSON
    array of rows) overrides rows by `id` and adds new ones; invalid rows are
    logged and dropped, and only subscription-trusted rows may set
    `private_ok`; a sandbox row is always `sandbox-public` with `private_ok`
-   false. A row with `kind: "promotion"` needs `expires`, sorts first until
-   then, and, like every row, uses the `codex`, `sandbox` or `router-chat`
+   false. A row with `kind: "promotion"` needs `expires` and, like every row,
+   uses the `codex`, `sandbox` or `router-chat`
    transport. A `router-chat` row answers only what the local rung would
    take (`[class: text]`, never `[task: code]`) through the same
    `LITELLM_LOCAL_BASE_URL` chat call and the same size gate. An unpaid
@@ -165,29 +161,29 @@ the hook itself on the on-host `small` alias; every `route` line names the
 outcome under `kind` (`value` `text`, `code` or `other` with `source` `tag`,
 `classifier` or `none`).
 
-Run `agent-route <code|private|other>` from the plugin root to inspect the
-first eligible executor. `code` means public coding; use `other` for read-only
+Run `agent-route <code|private|other>` from the plugin root to inspect a
+route. `code` means public coding; use `other` for read-only
 work even in public repos. The helper reports a route; it does not dispatch or
 verify the repository. `AGENT_ROUTE_CODEX_QUOTA=available|exhausted` and
 `AGENT_ROUTE_ZCODE_AVAILABLE=yes|no` are test overrides.
 
 ## Second-opinion review (agy)
 
-Antigravity (`agy`, Gemini 3.8 Flash) gives an independent second opinion on a
+Antigravity (`agy`) gives an independent second opinion on a
 high-risk diff. It is a reviewer, not an executor: it does not edit, merge, or
 join the ladder. Use it on public repos and on trusted repos the operator names.
 
-Non-interactive call, checked with `agy --help` and a live run on 2026-10-31:
+Non-interactive call, checked with `agy --help`:
 
 ```sh
 agy -p="Read <brief-file> and review the diff it names. Reply with findings only, one per line: SEVERITY | file:line | issue." \
-  --add-dir <dir-holding-brief-and-diff> --model gemini-3.8-flash-high --mode plan --output-format text
+  --add-dir <dir-holding-brief-and-diff> --mode plan --output-format text
 ```
 
 - `-p` takes its prompt as a value. It does not read stdin, so put the paths to
   the brief and diff inside the prompt, and pass their directory with `--add-dir`.
-- Pin `--model gemini-3.8-flash-high` (or `gemini-3.8-flash-medium`). `agy models`
-  also lists Claude models, which this policy forbids here.
+- The operator's configuration names the model; do not pin one in a brief or a
+  command. `agy models` also lists Claude models, which this policy forbids here.
 - `--mode plan` is the flag agy documents for plan mode. Its help does not say it
   blocks writes, so the brief must also say not to edit.
 - Read stdout and the exit code. A non-zero exit or empty reply is a failed
