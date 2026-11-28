@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.2](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.38.1...jpe-ai-delegation-v1.38.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** queue foreground attempts per executor row and report executor usage ([#952](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/952)) ([15397d4](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/15397d467fe362a87fba6848380d1e74a0dd68fe))
+
 ## [1.38.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/jpe-ai-delegation-v1.38.0...jpe-ai-delegation-v1.38.1) (2026-11-28)
 
 

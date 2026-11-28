@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.86.2](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.86.1...v6.86.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **jpe-ai-delegation:** queue foreground attempts per executor row and report executor usage ([#952](https://github.com/JacobPEvans-ai/claude-code-plugins/issues/952)) ([15397d4](https://github.com/JacobPEvans-ai/claude-code-plugins/commit/15397d467fe362a87fba6848380d1e74a0dd68fe))
+
 ## [6.86.1](https://github.com/JacobPEvans-ai/claude-code-plugins/compare/v6.86.0...v6.86.1) (2026-11-28)
 
 
